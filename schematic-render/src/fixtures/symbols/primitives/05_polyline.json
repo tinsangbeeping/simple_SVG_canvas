@@ -1,0 +1,35 @@
+{
+  "id": "polyline_test",
+  "bbox": { "x": -40, "y": -30, "w": 80, "h": 60 },
+  "primitives": [
+    { 
+      "kind": "polyline", 
+      "points": [
+        { "x": -30, "y": -20 },
+        { "x": -20, "y": -10 },
+        { "x": -30, "y": 0 },
+        { "x": -20, "y": 10 }
+      ],
+      "closed": false,
+      "fill": false,
+      "width": 2
+    },
+    { 
+      "kind": "polyline", 
+      "points": [
+        { "x": 10, "y": -20 },
+        { "x": 30, "y": -20 },
+        { "x": 30, "y": 10 },
+        { "x": 10, "y": 10 }
+      ],
+      "closed": true,
+      "fill": true
+    },
+    { "kind": "text", "x": -25, "y": -25, "text": "Open", "anchor": "c", "size": 5 },
+    { "kind": "text", "x": 20, "y": -25, "text": "Closed", "anchor": "c", "size": 5 }
+  ],
+  "pins": [
+    { "name": "L", "pos": { "x": -35, "y": 0 }, "dir": "left" },
+    { "name": "R", "pos": { "x": 35, "y": 0 }, "dir": "right" }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "patch.v1.schema.json",
+  "title": "Patch (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "instances", "wires", "ports", "createdAt"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "instances": { "$ref": "schematicDoc.v1.schema.json#/properties/instances" },
+    "wires": { "$ref": "schematicDoc.v1.schema.json#/properties/wires" },
+    "ports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "instId", "pinName", "pos"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "instId": { "type": "string", "minLength": 1 },
+          "pinName": { "type": "string", "minLength": 1 },
+          "pos": { "$ref": "schematicDoc.v1.schema.json#/definitions/point" }
+        }
+      }
+    },
+    "bbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "w", "h"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "w": { "type": "number" },
+        "h": { "type": "number" }
+      }
+    },
+    "thumbnail": { "type": "string" },
+    "createdAt": { "type": "number" }
+  }
+}

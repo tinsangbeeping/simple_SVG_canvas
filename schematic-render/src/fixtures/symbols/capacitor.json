@@ -1,0 +1,38 @@
+{
+  "id": "C",
+  "bbox": { "x": -20, "y": -15, "w": 40, "h": 30 },
+  "primitives": [
+    {
+      "kind": "line",
+      "a": { "x": -5, "y": -12 },
+      "b": { "x": -5, "y": 12 },
+      "stroke": "#4af",
+      "strokeWidth": 2
+    },
+    {
+      "kind": "line",
+      "a": { "x": 5, "y": -12 },
+      "b": { "x": 5, "y": 12 },
+      "stroke": "#4af",
+      "strokeWidth": 2
+    },
+    {
+      "kind": "line",
+      "a": { "x": -20, "y": 0 },
+      "b": { "x": -5, "y": 0 },
+      "stroke": "#4af",
+      "strokeWidth": 1
+    },
+    {
+      "kind": "line",
+      "a": { "x": 5, "y": 0 },
+      "b": { "x": 20, "y": 0 },
+      "stroke": "#4af",
+      "strokeWidth": 1
+    }
+  ],
+  "pins": [
+    { "name": "1", "pos": { "x": -20, "y": 0 }, "dir": "left" },
+    { "name": "2", "pos": { "x": 20, "y": 0 }, "dir": "right" }
+  ]
+}

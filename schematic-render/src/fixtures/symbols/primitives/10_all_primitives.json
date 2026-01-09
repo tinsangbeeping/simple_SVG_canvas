@@ -1,0 +1,27 @@
+{
+  "id": "all_primitives",
+  "bbox": { "x": -60, "y": -60, "w": 120, "h": 120 },
+  "primitives": [
+    { "kind": "line", "a": { "x": -50, "y": -50 }, "b": { "x": 50, "y": -50 }, "width": 1 },
+    { "kind": "rect", "x": -40, "y": -40, "w": 80, "h": 20, "fill": false },
+    { "kind": "circle", "cx": -30, "cy": 10, "r": 10, "fill": false },
+    { "kind": "arc", "cx": 0, "cy": 10, "r": 10, "startAngle": 0, "endAngle": 180, "fill": false },
+    { 
+      "kind": "polyline", 
+      "points": [
+        { "x": 20, "y": 0 },
+        { "x": 30, "y": 10 },
+        { "x": 40, "y": 5 }
+      ],
+      "closed": false,
+      "fill": false
+    },
+    { "kind": "text", "x": 0, "y": 40, "text": "All Primitives", "anchor": "c", "size": 6 }
+  ],
+  "pins": [
+    { "name": "N", "pos": { "x": 0, "y": -50 }, "dir": "up" },
+    { "name": "S", "pos": { "x": 0, "y": 50 }, "dir": "down" },
+    { "name": "W", "pos": { "x": -50, "y": 0 }, "dir": "left" },
+    { "name": "E", "pos": { "x": 50, "y": 0 }, "dir": "right" }
+  ]
+}

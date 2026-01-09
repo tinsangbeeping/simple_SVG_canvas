@@ -1,0 +1,71 @@
+{
+  "id": "LED",
+  "bbox": { "x": -15, "y": -15, "w": 30, "h": 30 },
+  "primitives": [
+    {
+      "kind": "polyline",
+      "points": [
+        { "x": -10, "y": -10 },
+        { "x": 10, "y": 0 },
+        { "x": -10, "y": 10 },
+        { "x": -10, "y": -10 }
+      ],
+      "fill": "none",
+      "stroke": "#ff4444",
+      "strokeWidth": 2
+    },
+    {
+      "kind": "line",
+      "a": { "x": 10, "y": -10 },
+      "b": { "x": 10, "y": 10 },
+      "stroke": "#ff4444",
+      "strokeWidth": 2
+    },
+    {
+      "kind": "line",
+      "a": { "x": 5, "y": -15 },
+      "b": { "x": 10, "y": -18 },
+      "stroke": "#ffaa00",
+      "strokeWidth": 1
+    },
+    {
+      "kind": "line",
+      "a": { "x": 10, "y": -18 },
+      "b": { "x": 8, "y": -16 },
+      "stroke": "#ffaa00",
+      "strokeWidth": 1
+    },
+    {
+      "kind": "line",
+      "a": { "x": 10, "y": -18 },
+      "b": { "x": 10, "y": -15 },
+      "stroke": "#ffaa00",
+      "strokeWidth": 1
+    },
+    {
+      "kind": "line",
+      "a": { "x": 10, "y": -15 },
+      "b": { "x": 15, "y": -18 },
+      "stroke": "#ffaa00",
+      "strokeWidth": 1
+    },
+    {
+      "kind": "line",
+      "a": { "x": 15, "y": -18 },
+      "b": { "x": 13, "y": -16 },
+      "stroke": "#ffaa00",
+      "strokeWidth": 1
+    },
+    {
+      "kind": "line",
+      "a": { "x": 15, "y": -18 },
+      "b": { "x": 15, "y": -15 },
+      "stroke": "#ffaa00",
+      "strokeWidth": 1
+    }
+  ],
+  "pins": [
+    { "name": "A", "pos": { "x": -15, "y": 0 }, "dir": "left" },
+    { "name": "K", "pos": { "x": 15, "y": 0 }, "dir": "right" }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "symbols": [
+    {
+      "id": "capacitor",
+      "primitives": [
+        { "kind": "line", "a": { "x": -30, "y": 0 }, "b": { "x": -5, "y": 0 } },
+        { "kind": "line", "a": { "x": 5, "y": 0 }, "b": { "x": 30, "y": 0 } },
+        { "kind": "line", "a": { "x": -5, "y": -12 }, "b": { "x": -5, "y": 12 } },
+        { "kind": "line", "a": { "x": 5, "y": -12 }, "b": { "x": 5, "y": 12 } },
+        { "kind": "text", "x": 0, "y": -18, "text": "C", "anchor": "c", "size": 6 }
+      ],
+      "pins": [
+        { "name": "1", "pos": { "x": -30, "y": 0 }, "dir": "left" },
+        { "name": "2", "pos": { "x": 30, "y": 0 }, "dir": "right" }
+      ]
+    },
+    {
+      "id": "led",
+      "primitives": [
+        { "kind": "line", "a": { "x": -30, "y": 0 }, "b": { "x": -10, "y": 0 } },
+        { "kind": "line", "a": { "x": 10, "y": 0 }, "b": { "x": 30, "y": 0 } },
+        { "kind": "polyline", "points": [
+          { "x": -10, "y": -10 },
+          { "x": -10, "y": 10 },
+          { "x": 10, "y": 0 },
+          { "x": -10, "y": -10 }
+        ], "closed": true, "fill": false },
+        { "kind": "line", "a": { "x": 10, "y": -10 }, "b": { "x": 10, "y": 10 } },
+        { "kind": "line", "a": { "x": 5, "y": -15 }, "b": { "x": 10, "y": -20 } },
+        { "kind": "line", "a": { "x": 10, "y": -20 }, "b": { "x": 10, "y": -17 } },
+        { "kind": "line", "a": { "x": 10, "y": -20 }, "b": { "x": 7, "y": -20 } },
+        { "kind": "text", "x": 0, "y": 16, "text": "LED", "anchor": "c", "size": 5 }
+      ],
+      "pins": [
+        { "name": "A", "pos": { "x": -30, "y": 0 }, "dir": "left" },
+        { "name": "K", "pos": { "x": 30, "y": 0 }, "dir": "right" }
+      ]
+    },
+    {
+      "id": "inductor",
+      "primitives": [
+        { "kind": "line", "a": { "x": -30, "y": 0 }, "b": { "x": -20, "y": 0 } },
+        { "kind": "line", "a": { "x": 20, "y": 0 }, "b": { "x": 30, "y": 0 } },
+        { "kind": "arc", "cx": -12, "cy": 0, "r": 8, "startAngle": 180, "endAngle": 0, "fill": false },
+        { "kind": "arc", "cx": 0, "cy": 0, "r": 8, "startAngle": 180, "endAngle": 0, "fill": false },
+        { "kind": "arc", "cx": 12, "cy": 0, "r": 8, "startAngle": 180, "endAngle": 0, "fill": false },
+        { "kind": "text", "x": 0, "y": -15, "text": "L", "anchor": "c", "size": 6 }
+      ],
+      "pins": [
+        { "name": "1", "pos": { "x": -30, "y": 0 }, "dir": "left" },
+        { "name": "2", "pos": { "x": 30, "y": 0 }, "dir": "right" }
+      ]
+    }
+  ]
+}

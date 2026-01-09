@@ -1,0 +1,12 @@
+{
+  "id": "line_test",
+  "bbox": { "x": -30, "y": -10, "w": 60, "h": 20 },
+  "primitives": [
+    { "kind": "line", "a": { "x": -20, "y": 0 }, "b": { "x": 20, "y": 0 }, "width": 2 },
+    { "kind": "line", "a": { "x": -20, "y": 5 }, "b": { "x": 20, "y": 5 }, "dash": [5, 3] }
+  ],
+  "pins": [
+    { "name": "A", "pos": { "x": -20, "y": 0 }, "dir": "left" },
+    { "name": "B", "pos": { "x": 20, "y": 0 }, "dir": "right" }
+  ]
+}

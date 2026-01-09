@@ -1,0 +1,12 @@
+{
+  "id": "bad_bbox_too_small",
+  "bbox": { "x": -10, "y": -10, "w": 20, "h": 20 },
+  "primitives": [
+    { "kind": "circle", "cx": 0, "cy": 0, "r": 30, "fill": false },
+    { "kind": "text", "x": 0, "y": -35, "text": "BBox too small", "anchor": "c", "size": 5 }
+  ],
+  "pins": [
+    { "name": "1", "pos": { "x": -30, "y": 0 }, "dir": "left" },
+    { "name": "2", "pos": { "x": 30, "y": 0 }, "dir": "right" }
+  ]
+}

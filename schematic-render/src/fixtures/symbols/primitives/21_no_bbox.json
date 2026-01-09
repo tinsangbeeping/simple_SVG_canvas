@@ -1,0 +1,11 @@
+{
+  "id": "no_bbox",
+  "primitives": [
+    { "kind": "rect", "x": -25, "y": -25, "w": 50, "h": 50, "fill": false },
+    { "kind": "text", "x": 0, "y": 0, "text": "No BBox", "anchor": "c", "size": 6 }
+  ],
+  "pins": [
+    { "name": "A", "pos": { "x": -25, "y": 0 }, "dir": "left" },
+    { "name": "B", "pos": { "x": 25, "y": 0 }, "dir": "right" }
+  ]
+}

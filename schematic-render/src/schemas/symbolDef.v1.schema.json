@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "symbolDef.v1.schema.json",
+  "title": "SymbolDef (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "primitives", "pins"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "bbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "w", "h"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "w": { "type": "number" },
+        "h": { "type": "number" }
+      }
+    },
+    "primitives": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["kind", "a", "b"],
+            "properties": {
+              "kind": { "const": "line" },
+              "a": { "$ref": "#/definitions/point" },
+              "b": { "$ref": "#/definitions/point" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["kind", "x", "y", "w", "h"],
+            "properties": {
+              "kind": { "const": "rect" },
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "w": { "type": "number" },
+              "h": { "type": "number" },
+              "fill": { "type": "boolean" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["kind", "cx", "cy", "r"],
+            "properties": {
+              "kind": { "const": "circle" },
+              "cx": { "type": "number" },
+              "cy": { "type": "number" },
+              "r": { "type": "number" },
+              "fill": { "type": "boolean" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["kind", "x", "y", "text"],
+            "properties": {
+              "kind": { "const": "text" },
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "text": { "type": "string" },
+              "size": { "type": "number" },
+              "anchor": { "enum": ["l", "c", "r"] }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["kind", "cx", "cy", "r", "startAngle", "endAngle"],
+            "properties": {
+              "kind": { "const": "arc" },
+              "cx": { "type": "number" },
+              "cy": { "type": "number" },
+              "r": { "type": "number" },
+              "startAngle": { "type": "number" },
+              "endAngle": { "type": "number" },
+              "fill": { "type": "boolean" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["kind", "points"],
+            "properties": {
+              "kind": { "const": "polyline" },
+              "points": { "type": "array", "items": { "$ref": "#/definitions/point" } },
+              "closed": { "type": "boolean" },
+              "fill": { "type": "boolean" }
+            }
+          }
+        ]
+      }
+    },
+    "pins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "pos", "dir"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "number": { "type": "string" },
+          "pos": { "$ref": "#/definitions/point" },
+          "dir": { "enum": ["left", "right", "up", "down"] }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    }
+  }
+}

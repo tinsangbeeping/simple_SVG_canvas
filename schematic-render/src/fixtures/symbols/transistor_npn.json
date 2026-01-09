@@ -1,0 +1,22 @@
+{
+  "id": "transistor_npn",
+  "primitives": [
+    { "kind": "line", "a": { "x": -30, "y": 0 }, "b": { "x": -10, "y": 0 } },
+    { "kind": "line", "a": { "x": -10, "y": -15 }, "b": { "x": -10, "y": 15 } },
+    { "kind": "line", "a": { "x": -10, "y": -8 }, "b": { "x": 10, "y": -20 } },
+    { "kind": "line", "a": { "x": -10, "y": 8 }, "b": { "x": 10, "y": 20 } },
+    { "kind": "line", "a": { "x": 10, "y": -20 }, "b": { "x": 10, "y": -30 } },
+    { "kind": "line", "a": { "x": 10, "y": 20 }, "b": { "x": 10, "y": 30 } },
+    { "kind": "polyline", "points": [
+      { "x": 10, "y": 20 },
+      { "x": 5, "y": 15 },
+      { "x": 8, "y": 13 }
+    ], "closed": true, "fill": true },
+    { "kind": "text", "x": -25, "y": 0, "text": "Q", "anchor": "r", "size": 6 }
+  ],
+  "pins": [
+    { "name": "B", "pos": { "x": -30, "y": 0 }, "dir": "left" },
+    { "name": "C", "pos": { "x": 10, "y": -30 }, "dir": "up" },
+    { "name": "E", "pos": { "x": 10, "y": 30 }, "dir": "down" }
+  ]
+}

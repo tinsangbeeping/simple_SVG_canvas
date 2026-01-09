@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "instances": [
+    {
+      "id": "R1",
+      "symbolId": "R",
+      "pos": { "x": 120, "y": 100 },
+      "rotDeg": 0
+    },
+    {
+      "id": "R2",
+      "symbolId": "R",
+      "pos": { "x": 280, "y": 160 },
+      "rotDeg": 90
+    },
+    {
+      "id": "R3",
+      "symbolId": "R",
+      "pos": { "x": 360, "y": 100 },
+      "rotDeg": 0
+    },
+    {
+      "id": "GND1",
+      "symbolId": "GND",
+      "pos": { "x": 280, "y": 280 },
+      "rotDeg": 0
+    }
+  ],
+  "wires": [
+    {
+      "id": "w1",
+      "a": { "instId": "R1", "pinName": "2" },
+      "b": { "instId": "R2", "pinName": "1" }
+    },
+    {
+      "id": "w2",
+      "a": { "instId": "R2", "pinName": "2" },
+      "b": { "instId": "R3", "pinName": "1" }
+    },
+    {
+      "id": "w3",
+      "a": { "instId": "R2", "pinName": "1" },
+      "b": { "instId": "GND1", "pinName": "GND" }
+    }
+  ]
+}

@@ -1,0 +1,969 @@
+{
+  "schemaVersion": 1,
+  "symbols": [
+    {
+      "id": "BUF602xD",
+      "pins": [
+        {
+          "name": "IN",
+          "number": "4",
+          "pos": {
+            "x": -5.08,
+            "y": 0
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "2",
+          "pos": {
+            "x": -2.54,
+            "y": 5.08
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "3",
+          "pos": {
+            "x": -2.54,
+            "y": 2.54
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "7",
+          "pos": {
+            "x": -2.54,
+            "y": -2.54
+          },
+          "dir": "right"
+        },
+        {
+          "name": "V+",
+          "number": "1",
+          "pos": {
+            "x": -2.54,
+            "y": 3.81
+          },
+          "dir": "down"
+        },
+        {
+          "name": "V-",
+          "number": "5",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "VREF",
+          "number": "6",
+          "pos": {
+            "x": 0,
+            "y": -2.54
+          },
+          "dir": "up"
+        },
+        {
+          "name": "8",
+          "number": "8",
+          "pos": {
+            "x": 5.08,
+            "y": 0
+          },
+          "dir": "left"
+        }
+      ],
+      "primitives": [
+        {
+          "kind": "polyline",
+          "points": [
+            {
+              "x": 5.08,
+              "y": 0
+            },
+            {
+              "x": -5.08,
+              "y": 5.08
+            },
+            {
+              "x": -5.08,
+              "y": -5.08
+            },
+            {
+              "x": 5.08,
+              "y": 0
+            }
+          ],
+          "width": 0.254,
+          "fill": true
+        }
+      ]
+    },
+    {
+      "id": "BUF602xDBV",
+      "pins": [
+        {
+          "name": "IN",
+          "number": "4",
+          "pos": {
+            "x": -5.08,
+            "y": 0
+          },
+          "dir": "right"
+        },
+        {
+          "name": "V+",
+          "number": "5",
+          "pos": {
+            "x": -2.54,
+            "y": 3.81
+          },
+          "dir": "down"
+        },
+        {
+          "name": "V-",
+          "number": "2",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "VREF",
+          "number": "3",
+          "pos": {
+            "x": 0,
+            "y": -2.54
+          },
+          "dir": "up"
+        },
+        {
+          "name": "1",
+          "number": "1",
+          "pos": {
+            "x": 5.08,
+            "y": 0
+          },
+          "dir": "left"
+        }
+      ],
+      "primitives": [
+        {
+          "kind": "polyline",
+          "points": [
+            {
+              "x": 5.08,
+              "y": 0
+            },
+            {
+              "x": -5.08,
+              "y": 5.08
+            },
+            {
+              "x": -5.08,
+              "y": -5.08
+            },
+            {
+              "x": 5.08,
+              "y": 0
+            }
+          ],
+          "width": 0.254,
+          "fill": true
+        }
+      ]
+    },
+    {
+      "id": "BUF634AxDDA",
+      "pins": [
+        {
+          "name": "THPAD",
+          "number": "9",
+          "pos": {
+            "x": 0,
+            "y": -2.54
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V_{IN}",
+          "number": "3",
+          "pos": {
+            "x": -5.08,
+            "y": 0
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "2",
+          "pos": {
+            "x": -2.54,
+            "y": 5.08
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "5",
+          "pos": {
+            "x": -2.54,
+            "y": 2.54
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "8",
+          "pos": {
+            "x": -2.54,
+            "y": -2.54
+          },
+          "dir": "right"
+        },
+        {
+          "name": "V+",
+          "number": "7",
+          "pos": {
+            "x": -2.54,
+            "y": 3.81
+          },
+          "dir": "down"
+        },
+        {
+          "name": "V-",
+          "number": "4",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "BW",
+          "number": "1",
+          "pos": {
+            "x": 2.54,
+            "y": -1.2700000000000005
+          },
+          "dir": "up"
+        },
+        {
+          "name": "6",
+          "number": "6",
+          "pos": {
+            "x": 5.08,
+            "y": 0
+          },
+          "dir": "left"
+        }
+      ],
+      "primitives": [
+        {
+          "kind": "polyline",
+          "points": [
+            {
+              "x": 5.08,
+              "y": 0
+            },
+            {
+              "x": -5.08,
+              "y": 5.08
+            },
+            {
+              "x": -5.08,
+              "y": -5.08
+            },
+            {
+              "x": 5.08,
+              "y": 0
+            }
+          ],
+          "width": 0.254,
+          "fill": true
+        }
+      ]
+    },
+    {
+      "id": "BUF634U",
+      "pins": [
+        {
+          "name": "V_{IN}",
+          "number": "3",
+          "pos": {
+            "x": -5.08,
+            "y": 0
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "2",
+          "pos": {
+            "x": -2.54,
+            "y": 5.08
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "5",
+          "pos": {
+            "x": -2.54,
+            "y": 2.54
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "8",
+          "pos": {
+            "x": -2.54,
+            "y": -2.54
+          },
+          "dir": "right"
+        },
+        {
+          "name": "V+",
+          "number": "7",
+          "pos": {
+            "x": -2.54,
+            "y": 3.81
+          },
+          "dir": "down"
+        },
+        {
+          "name": "V-",
+          "number": "4",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "BW",
+          "number": "1",
+          "pos": {
+            "x": 0,
+            "y": -2.54
+          },
+          "dir": "up"
+        },
+        {
+          "name": "6",
+          "number": "6",
+          "pos": {
+            "x": 5.08,
+            "y": 0
+          },
+          "dir": "left"
+        }
+      ],
+      "primitives": [
+        {
+          "kind": "polyline",
+          "points": [
+            {
+              "x": 5.08,
+              "y": 0
+            },
+            {
+              "x": -5.08,
+              "y": 5.08
+            },
+            {
+              "x": -5.08,
+              "y": -5.08
+            },
+            {
+              "x": 5.08,
+              "y": 0
+            }
+          ],
+          "width": 0.254,
+          "fill": true
+        }
+      ]
+    },
+    {
+      "id": "EL2001CN",
+      "pins": [
+        {
+          "name": "IN",
+          "number": "2",
+          "pos": {
+            "x": -5.08,
+            "y": 0
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "8",
+          "pos": {
+            "x": -2.54,
+            "y": 5.08
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "3",
+          "pos": {
+            "x": -2.54,
+            "y": 2.54
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "5",
+          "pos": {
+            "x": -2.54,
+            "y": -2.54
+          },
+          "dir": "right"
+        },
+        {
+          "name": "NC",
+          "number": "6",
+          "pos": {
+            "x": -2.54,
+            "y": -5.08
+          },
+          "dir": "right"
+        },
+        {
+          "name": "V+",
+          "number": "1",
+          "pos": {
+            "x": -2.54,
+            "y": 3.81
+          },
+          "dir": "down"
+        },
+        {
+          "name": "V-",
+          "number": "4",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "7",
+          "number": "7",
+          "pos": {
+            "x": 5.08,
+            "y": 0
+          },
+          "dir": "left"
+        }
+      ],
+      "primitives": [
+        {
+          "kind": "polyline",
+          "points": [
+            {
+              "x": 5.08,
+              "y": 0
+            },
+            {
+              "x": -5.08,
+              "y": 5.08
+            },
+            {
+              "x": -5.08,
+              "y": -5.08
+            },
+            {
+              "x": 5.08,
+              "y": 0
+            }
+          ],
+          "width": 0.254,
+          "fill": true
+        }
+      ]
+    },
+    {
+      "id": "LH0002H",
+      "pins": [
+        {
+          "name": "IN",
+          "number": "8",
+          "pos": {
+            "x": -5.08,
+            "y": 0
+          },
+          "dir": "right"
+        },
+        {
+          "name": "V1+",
+          "number": "1",
+          "pos": {
+            "x": -2.54,
+            "y": 3.81
+          },
+          "dir": "down"
+        },
+        {
+          "name": "V1-",
+          "number": "7",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V2+",
+          "number": "2",
+          "pos": {
+            "x": 0,
+            "y": 2.54
+          },
+          "dir": "down"
+        },
+        {
+          "name": "V2-",
+          "number": "6",
+          "pos": {
+            "x": 0,
+            "y": -2.54
+          },
+          "dir": "up"
+        },
+        {
+          "name": "E3",
+          "number": "3",
+          "pos": {
+            "x": 2.54,
+            "y": 1.2700000000000005
+          },
+          "dir": "down"
+        },
+        {
+          "name": "E4",
+          "number": "5",
+          "pos": {
+            "x": 2.54,
+            "y": -1.2700000000000005
+          },
+          "dir": "up"
+        },
+        {
+          "name": "4",
+          "number": "4",
+          "pos": {
+            "x": 5.08,
+            "y": 0
+          },
+          "dir": "left"
+        }
+      ],
+      "primitives": [
+        {
+          "kind": "polyline",
+          "points": [
+            {
+              "x": 5.08,
+              "y": 0
+            },
+            {
+              "x": -5.08,
+              "y": 5.08
+            },
+            {
+              "x": -5.08,
+              "y": -5.08
+            },
+            {
+              "x": 5.08,
+              "y": 0
+            }
+          ],
+          "width": 0.254,
+          "fill": true
+        }
+      ]
+    },
+    {
+      "id": "LM6321H",
+      "pins": [
+        {
+          "name": "IN",
+          "number": "8",
+          "pos": {
+            "x": -5.08,
+            "y": 0
+          },
+          "dir": "right"
+        },
+        {
+          "name": "V+",
+          "number": "2",
+          "pos": {
+            "x": -2.54,
+            "y": 3.81
+          },
+          "dir": "down"
+        },
+        {
+          "name": "NC",
+          "number": "1",
+          "pos": {
+            "x": -2.54,
+            "y": 0
+          },
+          "dir": "down"
+        },
+        {
+          "name": "NC",
+          "number": "7",
+          "pos": {
+            "x": -2.54,
+            "y": 0
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "6",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "NC",
+          "number": "3",
+          "pos": {
+            "x": 0,
+            "y": 0
+          },
+          "dir": "down"
+        },
+        {
+          "name": "NC",
+          "number": "5",
+          "pos": {
+            "x": 0,
+            "y": 0
+          },
+          "dir": "up"
+        },
+        {
+          "name": "4",
+          "number": "4",
+          "pos": {
+            "x": 5.08,
+            "y": 0
+          },
+          "dir": "left"
+        }
+      ],
+      "primitives": [
+        {
+          "kind": "polyline",
+          "points": [
+            {
+              "x": 5.08,
+              "y": 0
+            },
+            {
+              "x": -5.08,
+              "y": 5.08
+            },
+            {
+              "x": -5.08,
+              "y": -5.08
+            },
+            {
+              "x": 5.08,
+              "y": 0
+            }
+          ],
+          "width": 0.254,
+          "fill": true
+        }
+      ]
+    },
+    {
+      "id": "LM6321M",
+      "pins": [
+        {
+          "name": "IN",
+          "number": "5",
+          "pos": {
+            "x": -5.08,
+            "y": 0
+          },
+          "dir": "right"
+        },
+        {
+          "name": "V+",
+          "number": "11",
+          "pos": {
+            "x": -2.54,
+            "y": 3.81
+          },
+          "dir": "down"
+        },
+        {
+          "name": "V-",
+          "number": "1",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "13",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "14",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "2",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "3",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "6",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "7",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "8",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "9",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "NC",
+          "number": "4",
+          "pos": {
+            "x": 0,
+            "y": 0
+          },
+          "dir": "down"
+        },
+        {
+          "name": "NC",
+          "number": "10",
+          "pos": {
+            "x": 0,
+            "y": 0
+          },
+          "dir": "up"
+        },
+        {
+          "name": "12",
+          "number": "12",
+          "pos": {
+            "x": 5.08,
+            "y": 0
+          },
+          "dir": "left"
+        }
+      ],
+      "primitives": [
+        {
+          "kind": "polyline",
+          "points": [
+            {
+              "x": 5.08,
+              "y": 0
+            },
+            {
+              "x": -5.08,
+              "y": 5.08
+            },
+            {
+              "x": -5.08,
+              "y": -5.08
+            },
+            {
+              "x": 5.08,
+              "y": 0
+            }
+          ],
+          "width": 0.254,
+          "fill": true
+        }
+      ]
+    },
+    {
+      "id": "LM6321N",
+      "pins": [
+        {
+          "name": "IN",
+          "number": "8",
+          "pos": {
+            "x": -5.08,
+            "y": 0
+          },
+          "dir": "right"
+        },
+        {
+          "name": "V+",
+          "number": "2",
+          "pos": {
+            "x": -2.54,
+            "y": 3.81
+          },
+          "dir": "down"
+        },
+        {
+          "name": "NC",
+          "number": "5",
+          "pos": {
+            "x": -2.54,
+            "y": 0
+          },
+          "dir": "down"
+        },
+        {
+          "name": "NC",
+          "number": "1",
+          "pos": {
+            "x": -2.54,
+            "y": 0
+          },
+          "dir": "up"
+        },
+        {
+          "name": "V-",
+          "number": "6",
+          "pos": {
+            "x": -2.54,
+            "y": -3.81
+          },
+          "dir": "up"
+        },
+        {
+          "name": "NC",
+          "number": "7",
+          "pos": {
+            "x": 0,
+            "y": 0
+          },
+          "dir": "down"
+        },
+        {
+          "name": "NC",
+          "number": "3",
+          "pos": {
+            "x": 0,
+            "y": 0
+          },
+          "dir": "up"
+        },
+        {
+          "name": "4",
+          "number": "4",
+          "pos": {
+            "x": 5.08,
+            "y": 0
+          },
+          "dir": "left"
+        }
+      ],
+      "primitives": [
+        {
+          "kind": "polyline",
+          "points": [
+            {
+              "x": 5.08,
+              "y": 0
+            },
+            {
+              "x": -5.08,
+              "y": 5.08
+            },
+            {
+              "x": -5.08,
+              "y": -5.08
+            },
+            {
+              "x": 5.08,
+              "y": 0
+            }
+          ],
+          "width": 0.254,
+          "fill": true
+        }
+      ]
+    },
+    {
+      "id": "BUF634AxD",
+      "pins": [],
+      "primitives": []
+    },
+    {
+      "id": "BUF634AxDRB",
+      "pins": [],
+      "primitives": []
+    }
+  ]
+}

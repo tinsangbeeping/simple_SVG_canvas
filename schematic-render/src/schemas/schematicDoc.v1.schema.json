@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schematicDoc.v1.schema.json",
+  "title": "SchematicDoc (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "instances", "wires"],
+  "properties": {
+    "schemaVersion": { "type": "number", "const": 1 },
+    "instances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "symbolId", "pos", "rotDeg"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "symbolId": { "type": "string", "minLength": 1 },
+          "pos": { "$ref": "#/definitions/point" },
+          "rotDeg": { "enum": [0, 90, 180, 270] }
+        }
+      }
+    },
+    "wires": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "a", "b"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "a": { "$ref": "#/definitions/endpoint" },
+          "b": { "$ref": "#/definitions/endpoint" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instId", "pinName"],
+      "properties": {
+        "instId": { "type": "string", "minLength": 1 },
+        "pinName": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

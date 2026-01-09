@@ -1,0 +1,52 @@
+{
+  "id": "MCU",
+  "bbox": { "x": -40, "y": -60, "w": 80, "h": 120 },
+  "primitives": [
+    {
+      "kind": "rect",
+      "x": -40,
+      "y": -60,
+      "w": 80,
+      "h": 120,
+      "fill": "#2a2a3a",
+      "stroke": "#6a8aaa",
+      "strokeWidth": 2
+    },
+    {
+      "kind": "text",
+      "x": 0,
+      "y": -40,
+      "text": "MCU",
+      "size": 12,
+      "fill": "#fff",
+      "anchor": "middle",
+      "baseline": "middle"
+    },
+    {
+      "kind": "text",
+      "x": 0,
+      "y": -25,
+      "text": "STM32F4",
+      "size": 8,
+      "fill": "#aaa",
+      "anchor": "middle",
+      "baseline": "middle"
+    }
+  ],
+  "pins": [
+    { "name": "VDD", "pos": { "x": -40, "y": -50 }, "dir": "left" },
+    { "name": "GND", "pos": { "x": -40, "y": -30 }, "dir": "left" },
+    { "name": "PA0", "pos": { "x": -40, "y": -10 }, "dir": "left" },
+    { "name": "PA1", "pos": { "x": -40, "y": 10 }, "dir": "left" },
+    { "name": "PA2", "pos": { "x": -40, "y": 30 }, "dir": "left" },
+    { "name": "PA3", "pos": { "x": -40, "y": 50 }, "dir": "left" },
+    { "name": "PB0", "pos": { "x": 40, "y": -50 }, "dir": "right" },
+    { "name": "PB1", "pos": { "x": 40, "y": -30 }, "dir": "right" },
+    { "name": "PB2", "pos": { "x": 40, "y": -10 }, "dir": "right" },
+    { "name": "PB3", "pos": { "x": 40, "y": 10 }, "dir": "right" },
+    { "name": "PB4", "pos": { "x": 40, "y": 30 }, "dir": "right" },
+    { "name": "PB5", "pos": { "x": 40, "y": 50 }, "dir": "right" },
+    { "name": "NRST", "pos": { "x": 0, "y": -60 }, "dir": "up" },
+    { "name": "BOOT0", "pos": { "x": 0, "y": 60 }, "dir": "down" }
+  ]
+}

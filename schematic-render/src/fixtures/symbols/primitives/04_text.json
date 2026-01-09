@@ -1,0 +1,14 @@
+{
+  "id": "text_test",
+  "bbox": { "x": -40, "y": -20, "w": 80, "h": 40 },
+  "primitives": [
+    { "kind": "text", "x": 0, "y": -10, "text": "Center", "anchor": "c", "size": 8 },
+    { "kind": "text", "x": -30, "y": 0, "text": "Left", "anchor": "l", "size": 6 },
+    { "kind": "text", "x": 30, "y": 0, "text": "Right", "anchor": "r", "size": 6 },
+    { "kind": "text", "x": 0, "y": 10, "text": "Small", "anchor": "c", "size": 4 }
+  ],
+  "pins": [
+    { "name": "P1", "pos": { "x": -30, "y": 0 }, "dir": "left" },
+    { "name": "P2", "pos": { "x": 30, "y": 0 }, "dir": "right" }
+  ]
+}

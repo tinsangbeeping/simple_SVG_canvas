@@ -1,0 +1,93 @@
+[
+  {
+    "id": "R",
+    "pins": [
+      {
+        "name": "1",
+        "number": "1",
+        "pos": {
+          "x": 0,
+          "y": 2.54
+        },
+        "dir": "down"
+      },
+      {
+        "name": "2",
+        "number": "2",
+        "pos": {
+          "x": 0,
+          "y": -2.54
+        },
+        "dir": "up"
+      }
+    ],
+    "primitives": [
+      {
+        "kind": "rect",
+        "x": -1.016,
+        "y": -2.54,
+        "w": 2.032,
+        "h": 5.08,
+        "fill": false,
+        "stroke": {
+          "width": 0.254
+        }
+      }
+    ]
+  },
+  {
+    "id": "C",
+    "pins": [
+      {
+        "name": "1",
+        "number": "1",
+        "pos": {
+          "x": 0,
+          "y": 0.762
+        },
+        "dir": "down"
+      },
+      {
+        "name": "2",
+        "number": "2",
+        "pos": {
+          "x": 0,
+          "y": -0.762
+        },
+        "dir": "up"
+      }
+    ],
+    "primitives": [
+      {
+        "kind": "polyline",
+        "points": [
+          {
+            "x": -2.032,
+            "y": -0.762
+          },
+          {
+            "x": 2.032,
+            "y": -0.762
+          }
+        ],
+        "width": 0.508,
+        "fill": false
+      },
+      {
+        "kind": "polyline",
+        "points": [
+          {
+            "x": -2.032,
+            "y": 0.762
+          },
+          {
+            "x": 2.032,
+            "y": 0.762
+          }
+        ],
+        "width": 0.508,
+        "fill": false
+      }
+    ]
+  }
+]

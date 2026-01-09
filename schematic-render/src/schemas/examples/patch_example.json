@@ -1,0 +1,15 @@
+{
+  "id": "patch_example_1",
+  "name": "Example Patch",
+  "description": "Minimal example patch",
+  "instances": [
+    { "id": "p1", "symbolId": "R", "pos": { "x": 0, "y": 0 }, "rotDeg": 0 }
+  ],
+  "wires": [],
+  "ports": [
+    { "name": "IN", "instId": "p1", "pinName": "1", "pos": { "x": -60, "y": 0 } },
+    { "name": "OUT", "instId": "p1", "pinName": "2", "pos": { "x": 60, "y": 0 } }
+  ],
+  "bbox": { "x": -70, "y": -30, "w": 140, "h": 60 },
+  "createdAt": 0
+}

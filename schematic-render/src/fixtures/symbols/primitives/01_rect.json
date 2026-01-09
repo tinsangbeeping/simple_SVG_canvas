@@ -1,0 +1,12 @@
+{
+  "id": "rect_test",
+  "bbox": { "x": -25, "y": -25, "w": 50, "h": 50 },
+  "primitives": [
+    { "kind": "rect", "x": -20, "y": -20, "w": 40, "h": 30, "fill": false },
+    { "kind": "rect", "x": -10, "y": 15, "w": 20, "h": 5, "fill": true }
+  ],
+  "pins": [
+    { "name": "1", "pos": { "x": -20, "y": -5 }, "dir": "left" },
+    { "name": "2", "pos": { "x": 20, "y": -5 }, "dir": "right" }
+  ]
+}
