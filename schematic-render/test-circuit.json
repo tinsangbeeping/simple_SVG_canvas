@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "instances": [
+    { "id": "r1", "symbolId": "R", "pos": { "x": 140, "y": 140 }, "rotDeg": 0 },
+    { "id": "r2", "symbolId": "R", "pos": { "x": 320, "y": 140 }, "rotDeg": 0 },
+    { "id": "gnd", "symbolId": "GND", "pos": { "x": 230, "y": 260 }, "rotDeg": 0 }
+  ],
+  "wires": [
+    { "id": "w1", "a": { "instId": "r1", "pinName": "2" }, "b": { "instId": "r2", "pinName": "1" } },
+    { "id": "w2", "a": { "instId": "r2", "pinName": "2" }, "b": { "instId": "gnd", "pinName": "1" } }
+  ]
+}

@@ -16,6 +16,7 @@ import { registerPatch, getPatch, listPatches, clearAllPatches } from "../patch-
 import { extractPatchFromSelection, insertPatch } from "../patch-lib/operations"
 import { computeSymbolBBox } from "../symbol-dsl/geometry"
 import { loadSchematic as loadSchematicFromStorage, saveSchematic as saveSchematicToStorage } from "../storage"
+import { exportCircuitJSON } from "../schematic/netExtraction"
 
 const GRID = 20
 const W = 900
@@ -500,6 +501,22 @@ export function SchematicCanvas() {
     URL.revokeObjectURL(url)
   }
 
+  function exportCircuitNetlist() {
+    const validation = validateSchematicDoc(doc)
+    if (!validation.valid) {
+      alert(`Validation errors:\n${formatValidationErrors(validation)}`)
+      return
+    }
+    const json = exportCircuitJSON(doc)
+    const blob = new Blob([json], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `circuit.v1.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   function importJSON() {
     const input = document.createElement("input")
     input.type = "file"
@@ -772,6 +789,9 @@ export function SchematicCanvas() {
           </button>
           <button onClick={exportJSON} style={{ padding: "4px 12px" }}>
             💾 Save
+          </button>
+          <button onClick={exportCircuitNetlist} style={{ padding: "4px 12px", background: "#4a7a9a", border: "none", color: "white" }} title="Export netlist (circuit.v1.json)">
+            🔌 Netlist
           </button>
           <button onClick={importJSON} style={{ padding: "4px 12px" }}>
             📂 Load
