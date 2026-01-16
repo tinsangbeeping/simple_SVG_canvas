@@ -146,6 +146,30 @@ export function SymbolLibraryPanel({ onPlaceSymbol, selectedSymbolId, onLibraryC
     input.click()
   }
 
+  function handleExportSymbolLibrary() {
+    try {
+      const library = {
+        schemaVersion: 1,
+        symbols: symbols.map(s => s), // Already SymbolDef format
+      }
+      
+      const json = JSON.stringify(library, null, 2)
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `symbols.symboldef.v1.json`
+      a.click()
+      
+      URL.revokeObjectURL(url)
+      
+      alert(`✓ Exported ${symbols.length} symbols to symbols.symboldef.v1.json`)
+    } catch (err) {
+      alert(`⚠️ Export failed:\n${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   return (
     <div
       style={{
@@ -227,6 +251,22 @@ export function SymbolLibraryPanel({ onPlaceSymbol, selectedSymbolId, onLibraryC
             }}
           >
             📥 Import KiCad (JSON)
+          </button>
+          <button
+            onClick={handleExportSymbolLibrary}
+            style={{
+              width: "100%",
+              padding: "6px",
+              background: "#2a4a6a",
+              color: "white",
+              border: "1px solid #4a6a8a",
+              borderRadius: 3,
+              cursor: "pointer",
+              fontSize: 11,
+              marginBottom: 4,
+            }}
+          >
+            📤 Export Symbol Library
           </button>
           <button
             onClick={handleClearUserSymbols}

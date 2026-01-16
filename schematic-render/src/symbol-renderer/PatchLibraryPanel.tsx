@@ -153,6 +153,8 @@ interface PatchLibraryItemProps {
 }
 
 function PatchLibraryItem({ patch, isSelected, onPlace }: PatchLibraryItemProps) {
+  const [showPreview, setShowPreview] = useState(false)
+  
   return (
     <div
       style={{
@@ -162,6 +164,7 @@ function PatchLibraryItem({ patch, isSelected, onPlace }: PatchLibraryItemProps)
         padding: "8px 10px",
         cursor: "pointer",
         transition: "all 0.15s",
+        position: "relative",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -180,7 +183,7 @@ function PatchLibraryItem({ patch, isSelected, onPlace }: PatchLibraryItemProps)
             {patch.name}
           </div>
           <div style={{ fontSize: 10, color: "#888" }}>
-            {patch.instances.length} inst, {patch.wires.length} wire, {patch.ports.length} port
+            {patch.instances.length} inst, {patch.wires.length} wire{patch.wires.length !== 1 ? 's' : ''}, {patch.ports.length} port{patch.ports.length !== 1 ? 's' : ''}
           </div>
           {patch.description && (
             <div
@@ -196,26 +199,108 @@ function PatchLibraryItem({ patch, isSelected, onPlace }: PatchLibraryItemProps)
           )}
         </div>
 
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onPlace()
-          }}
-          style={{
-            background: "#4a8aaa",
-            color: "white",
-            border: "none",
-            borderRadius: 3,
-            padding: "4px 10px",
-            fontSize: 11,
-            cursor: "pointer",
-            fontWeight: 500,
-            flexShrink: 0,
-          }}
-        >
-          Place
-        </button>
+        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              setShowPreview(true)
+            }}
+            style={{
+              background: "#555",
+              color: "white",
+              border: "none",
+              borderRadius: 3,
+              padding: "4px 8px",
+              fontSize: 11,
+              cursor: "pointer",
+            }}
+            title="Preview patch"
+          >
+            👁️
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onPlace()
+            }}
+            style={{
+              background: "#4a8aaa",
+              color: "white",
+              border: "none",
+              borderRadius: 3,
+              padding: "4px 10px",
+              fontSize: 11,
+              cursor: "pointer",
+              fontWeight: 500,
+            }}
+          >
+            Place
+          </button>
+        </div>
       </div>
+      
+      {/* Preview Modal */}
+      {showPreview && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,0,0,0.8)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+          }}
+          onClick={() => setShowPreview(false)}
+        >
+          <div
+            style={{
+              background: "#1a1a1a",
+              border: "2px solid #4a8aaa",
+              borderRadius: 8,
+              padding: 16,
+              maxWidth: "80vw",
+              maxHeight: "80vh",
+              overflow: "auto",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <h3 style={{ margin: 0, color: "white", fontSize: 16 }}>
+                Preview: {patch.name}
+              </h3>
+              <button
+                onClick={() => setShowPreview(false)}
+                style={{
+                  background: "#822",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 3,
+                  padding: "4px 12px",
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+              >
+                ✕ Close
+              </button>
+            </div>
+            <div style={{ color: "#888", fontSize: 12, marginBottom: 12 }}>
+              {patch.instances.length} instance{patch.instances.length !== 1 ? 's' : ''} · {patch.wires.length} wire{patch.wires.length !== 1 ? 's' : ''} · {patch.ports.length} port{patch.ports.length !== 1 ? 's' : ''}
+            </div>
+            {patch.description && (
+              <div style={{ color: "#aaa", fontSize: 11, marginBottom: 12, fontStyle: "italic" }}>
+                {patch.description}
+              </div>
+            )}
+            <div style={{ color: "#666", fontSize: 11, fontStyle: "italic" }}>
+              (Full visual preview coming soon - this shows patch metadata)
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

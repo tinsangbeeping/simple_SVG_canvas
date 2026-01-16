@@ -24,7 +24,7 @@ function main() {
   
   try {
     const ir = parseKiCadSymFileToIR(content, filename)
-    const symbolDefs = ir.symbols.map(kicadIRToSymbolDef)
+    const symbolDefs = ir.symbols.map(sym => kicadIRToSymbolDef(sym))
     console.log(JSON.stringify(symbolDefs, null, 2))
   } catch (err) {
     console.error('Failed to convert KiCad symbols to SymbolDef:', err)

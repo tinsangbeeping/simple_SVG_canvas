@@ -27,7 +27,7 @@ function main() {
     const ir = parseKiCadSymFileToIR(content, filename)
     
     console.error(`[kicad:import] Converting ${ir.symbols.length} symbol(s) to SymbolDef...`)
-    const symbols = ir.symbols.map(kicadIRToSymbolDef)
+    const symbols = ir.symbols.map(sym => kicadIRToSymbolDef(sym))
     
     // Output standard symbol library format to stdout (JSON only)
     const library = {

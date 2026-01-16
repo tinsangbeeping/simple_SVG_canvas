@@ -495,7 +495,7 @@ export function SchematicCanvas() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `schematic-${Date.now()}.json`
+    a.download = `schematic.v1.json`
     a.click()
     URL.revokeObjectURL(url)
   }

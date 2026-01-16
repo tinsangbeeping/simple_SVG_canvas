@@ -2,13 +2,19 @@ import type { KicadSymbolIR, KicadPinOrientation } from './types'
 import type { SymbolDef, Pin, Primitive } from '../../symbol-dsl/types'
 
 /**
+ * Default scale factor for KiCad imports (KiCad units are tiny, typically 0.1-1mm)
+ * Scale up by 10x to make symbols visible and properly sized in our canvas
+ */
+export const KICAD_IMPORT_SCALE = 10
+
+/**
  * Convert KiCad symbol IR to SymbolDef (pure function, no side effects)
- * Units: keep KiCad coordinates as-is (typically mm in modern KiCad files)
+ * Units: KiCad coordinates are scaled by KICAD_IMPORT_SCALE for proper display
  * bbox: will be auto-computed by computeSymbolBBox when symbol is registered
  */
-export function kicadIRToSymbolDef(ir: KicadSymbolIR): SymbolDef {
-  const pins = ir.pins.map(convertPin)
-  const primitives = ir.graphics.flatMap(convertGraphic)
+export function kicadIRToSymbolDef(ir: KicadSymbolIR, scale: number = KICAD_IMPORT_SCALE): SymbolDef {
+  const pins = ir.pins.map(kPin => convertPin(kPin, scale))
+  const primitives = ir.graphics.flatMap(kGraphic => convertGraphic(kGraphic, scale))
   
   return {
     id: ir.name,
@@ -18,11 +24,11 @@ export function kicadIRToSymbolDef(ir: KicadSymbolIR): SymbolDef {
   }
 }
 
-function convertPin(kPin: KicadSymbolIR['pins'][0]): Pin {
+function convertPin(kPin: KicadSymbolIR['pins'][0], scale: number): Pin {
   // Pin snap position = base position + (direction vector * length)
   const [dx, dy] = getDirectionVector(kPin.orientation)
-  const snapX = kPin.x + dx * kPin.length
-  const snapY = kPin.y + dy * kPin.length
+  const snapX = (kPin.x + dx * kPin.length) * scale
+  const snapY = (kPin.y + dy * kPin.length) * scale
   
   // Map KiCad orientation to our pin direction
   const dir = kicadOrientationToPinDir(kPin.orientation)
@@ -56,39 +62,43 @@ function kicadOrientationToPinDir(orientation: KicadPinOrientation): Pin['dir'] 
   }
 }
 
-function convertGraphic(kGraphic: KicadSymbolIR['graphics'][0]): Primitive[] {
+function convertGraphic(kGraphic: KicadSymbolIR['graphics'][0], scale: number): Primitive[] {
   switch (kGraphic.kind) {
     case 'polyline': {
       if (kGraphic.points.length < 2) return []
       return [{
         kind: 'polyline',
-        points: kGraphic.points,
-        width: kGraphic.width,
+        points: kGraphic.points.map(p => ({ x: p.x * scale, y: p.y * scale })),
+        width: kGraphic.width * scale,
         fill: kGraphic.fill,
       }]
     }
     
     case 'rectangle': {
-      const x = Math.min(kGraphic.x1, kGraphic.x2)
-      const y = Math.min(kGraphic.y1, kGraphic.y2)
-      const w = Math.abs(kGraphic.x2 - kGraphic.x1)
-      const h = Math.abs(kGraphic.y2 - kGraphic.y1)
+      const x1 = kGraphic.x1 * scale
+      const x2 = kGraphic.x2 * scale
+      const y1 = kGraphic.y1 * scale
+      const y2 = kGraphic.y2 * scale
+      const x = Math.min(x1, x2)
+      const y = Math.min(y1, y2)
+      const w = Math.abs(x2 - x1)
+      const h = Math.abs(y2 - y1)
       return [{
         kind: 'rect',
         x, y, w, h,
         fill: kGraphic.fill,
-        stroke: { width: kGraphic.width },
+        stroke: { width: kGraphic.width * scale },
       }]
     }
     
     case 'circle': {
       return [{
         kind: 'circle',
-        cx: kGraphic.cx,
-        cy: kGraphic.cy,
-        r: kGraphic.radius,
+        cx: kGraphic.cx * scale,
+        cy: kGraphic.cy * scale,
+        r: kGraphic.radius * scale,
         fill: kGraphic.fill,
-        stroke: { width: kGraphic.width },
+        stroke: { width: kGraphic.width * scale },
       }]
     }
     
@@ -96,22 +106,22 @@ function convertGraphic(kGraphic: KicadSymbolIR['graphics'][0]): Primitive[] {
       // Arc support (basic - may need refinement for 3-point arcs)
       return [{
         kind: 'arc',
-        cx: kGraphic.cx,
-        cy: kGraphic.cy,
-        r: kGraphic.radius,
+        cx: kGraphic.cx * scale,
+        cy: kGraphic.cy * scale,
+        r: kGraphic.radius * scale,
         startAngle: kGraphic.startAngle,
         endAngle: kGraphic.endAngle,
-        width: kGraphic.width,
+        width: kGraphic.width * scale,
       }]
     }
     
     case 'text': {
       return [{
         kind: 'text',
-        x: kGraphic.x,
-        y: kGraphic.y,
+        x: kGraphic.x * scale,
+        y: kGraphic.y * scale,
         text: kGraphic.text,
-        size: kGraphic.size,
+        size: kGraphic.size * scale,
         anchor: 'c', // KiCad text is typically center-anchored
       }]
     }
