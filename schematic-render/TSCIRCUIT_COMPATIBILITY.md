@@ -2,67 +2,94 @@
 
 ## Overview
 
-Our Tag/NetLabel implementation now outputs **tscircuit-compatible Circuit JSON** format, making it interoperable with the tscircuit ecosystem.
+Our Circuit JSON export now produces **tscircuit circuit.v1 format** exactly as specified in the tscircuit documentation. This ensures full interoperability with tscircuit tools and ecosystem.
 
 ## Circuit JSON Format
 
-### Basic Structure
+### Basic Structure (circuit.v1)
 
 ```json
 {
   "type": "circuit.v1",
-  "version": "1.0",
-  "components": [...],
-  "nets": [...],
-  "metadata": {
-    "exporter": "schematic-render-canvas",
-    "exportDate": "2026-01-23T08:20:00.000Z",
-    "schematicVersion": 1
-  }
+  "components": [
+    {
+      "ref": "R1",
+      "symbolId": "R",
+      "display_value": "10k"
+    },
+    {
+      "ref": "LED1",
+      "symbolId": "LED"
+    }
+  ],
+  "nets": [
+    {
+      "nodes": [
+        { "ref": "R1", "pin": "2" },
+        { "ref": "LED1", "pin": "1" }
+      ]
+    }
+  ]
 }
 ```
 
-### Components Array
+**Key Differences from Previous Version:**
+- ❌ No `version` field
+- ❌ No `metadata` object
+- ✅ `symbolId` uses tscircuit names (R, C, LED, chip, etc.)
+- ✅ `display_value` instead of `value`
+- ✅ Nets are just node arrays (no required `name` field)
+
+### Component Format
 
 Each component includes:
 
 ```json
 {
-  "ref": "TAG1",
-  "symbolId": "Tag",
-  "net": "SCL",
-  "schematic_net_label": "SCL"
+  "ref": "R1",           // Unique reference designator
+  "symbolId": "R",       // tscircuit-compatible symbol type
+  "display_value": "10k" // Optional: value shown on schematic
 }
 ```
 
-**Properties:**
-- `ref` - Component reference designator (R1, C1, TAG1, etc.)
-- `symbolId` - Symbol identifier from library
-- `value` - Component value (optional)
-- `footprint` - PCB footprint (optional)
-- `net` - **NetLabel: declared net name** (for Tag components)
-- `schematic_net_label` - Alternative tscircuit-style property
+### symbolId Mapping
 
-### Nets Array
+Our internal symbols map to tscircuit symbolIds:
 
-Each net includes all connected pins:
+| Internal Symbol | tscircuit symbolId |
+|----------------|-------------------|
+| `resistor`, `R` | `R` |
+| `capacitor`, `C` | `C` |
+| `inductor`, `L` | `L` |
+| `diode`, `D` | `D` |
+| `led`, `LED` | `LED` |
+| `transistor_npn`, `transistor_pnp`, `mosfet_n`, `mosfet_p` | `Q` |
+| `opamp`, `comparator`, `buffer` | `opamp` |
+| `mcu`, `ne555`, `voltage_regulator`, etc. | `chip` |
+| `GND`, `ground` | `ground` |
+| `VCC`, `VDD`, `power` | `power` |
+| `Tag` | `netlabel` |
+
+### Net Format
+
+Nets are simple node arrays:
 
 ```json
 {
-  "name": "SCL",
   "nodes": [
-    { "ref": "R1", "pin": "1" },
-    { "ref": "TAG1", "pin": "TAG" },
-    { "ref": "TAG2", "pin": "TAG" },
-    { "ref": "U1", "pin": "PA0" }
+    { "ref": "VCC1", "pin": "VCC" },
+    { "ref": "R1", "pin": "1" }
   ]
 }
 ```
 
-**Net Naming Priority:**
-1. **Tag name** (explicit user label) - highest priority
-2. **Power symbol** (GND, VCC, VDD)
-3. **Auto-generated** (NET1, NET2, etc.)
+**Optional name field** (for debugging):
+```json
+{
+  "nodes": [...],
+  "name": "SCL"  // Optional: helpful for humans
+}
+```
 
 ## tscircuit NetLabel Compatibility
 

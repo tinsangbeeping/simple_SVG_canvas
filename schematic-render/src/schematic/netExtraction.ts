@@ -1,16 +1,77 @@
 import type { SchematicDoc } from "./types"
 
 /**
+ * Map internal symbol types to tscircuit-compatible symbolIds
+ * Based on tscircuit's built-in element types
+ */
+function getTSCircuitSymbolId(symbolId: string): string {
+  const mapping: Record<string, string> = {
+    // Passives
+    'resistor': 'R',
+    'R': 'R',
+    'capacitor': 'C',
+    'C': 'C',
+    'inductor': 'L',
+    'L': 'L',
+    
+    // Semiconductors
+    'diode': 'D',
+    'D': 'D',
+    'zener_diode': 'D',
+    'led': 'LED',
+    'LED': 'LED',
+    
+    // Transistors
+    'transistor_npn': 'Q',
+    'transistor_pnp': 'Q',
+    'mosfet_n': 'Q',
+    'mosfet_p': 'Q',
+    'Q': 'Q',
+    
+    // ICs
+    'opamp': 'opamp',
+    'comparator': 'opamp',
+    'buffer': 'opamp',
+    'mcu': 'chip',
+    'MCU': 'chip',
+    'ne555': 'chip',
+    'NE555': 'chip',
+    'reference_voltage': 'chip',
+    'voltage_regulator': 'chip',
+    'linear_regulator': 'chip',
+    'switching_regulator': 'chip',
+    'U': 'chip',
+    
+    // Power
+    'GND': 'ground',
+    'ground': 'ground',
+    'VCC': 'power',
+    'VDD': 'power',
+    'power': 'power',
+    
+    // Connectors
+    'usb_c': 'chip',
+    'pin_header_1': 'chip',
+    'pin_header_n': 'chip',
+    'J': 'chip',
+    
+    // NetLabel/Tag
+    'Tag': 'netlabel',
+  }
+  
+  return mapping[symbolId] || 'chip' // fallback to generic chip
+}
+
+/**
  * Circuit netlist format (tscircuit-inspired)
  */
 export type CircuitComponent = {
   ref: string
-  symbolId: string
-  value?: string
+  symbolId: string  // tscircuit-compatible: R, C, L, LED, chip, opamp, ground, power, netlabel
+  display_value?: string  // tscircuit: value shown on schematic
   footprint?: string
   // For netlabel/tag components
   net?: string  // The net name this label declares
-  schematic_net_label?: string  // Alternative tscircuit-style property
 }
 
 export type NetNode = {
@@ -19,21 +80,15 @@ export type NetNode = {
 }
 
 export type Net = {
-  name: string
   nodes: NetNode[]
+  // Optional: name for debugging/display (not in tscircuit spec)
+  name?: string
 }
 
 export type CircuitDoc = {
   type: "circuit.v1"
-  version?: string  // Schema version
   components: CircuitComponent[]
   nets: Net[]
-  // Additional metadata for tscircuit compatibility
-  metadata?: {
-    exporter: string
-    exportDate: string
-    schematicVersion: number
-  }
 }
 
 /**
@@ -196,20 +251,19 @@ export function extractNets(doc: SchematicDoc): CircuitDoc {
     const ref = generateRef(symbolId, count + 1)
     instIdToRef.set(inst.id, ref)
     
-    // Build component object
+    // Build component object with tscircuit-compatible symbolId
     const component: CircuitComponent = {
       ref,
-      symbolId,
-      // Optional fields can be added later via UI
-      // value: undefined,
-      // footprint: undefined,
+      symbolId: getTSCircuitSymbolId(symbolId),
     }
     
-    // Add netlabel/tag information for tscircuit compatibility
+    // Add netlabel net name for Tag components
     if (inst.symbolId === "Tag" && inst.tag) {
       component.net = inst.tag
-      component.schematic_net_label = inst.tag
     }
+    
+    // TODO: Add display_value from UI (e.g., "10k", "100nF")
+    // component.display_value = inst.value
     
     return component
   })
@@ -248,22 +302,18 @@ export function extractNets(doc: SchematicDoc): CircuitDoc {
       netName = powerNode ? powerNode.ref : `NET${netIndex++}`
     }
     
+    // tscircuit format: nets are just arrays of nodes
+    // name is optional and only for debugging
     nets.push({
-      name: netName,
       nodes: netNodes,
+      ...(netName && { name: netName }), // optional name for debugging
     })
   }
   
   return {
     type: "circuit.v1",
-    version: "1.0",
     components: circuitComponents,
     nets,
-    metadata: {
-      exporter: "schematic-render-canvas",
-      exportDate: new Date().toISOString(),
-      schematicVersion: doc.schemaVersion,
-    },
   }
 }
 
@@ -272,5 +322,52 @@ export function extractNets(doc: SchematicDoc): CircuitDoc {
  */
 export function exportCircuitJSON(doc: SchematicDoc): string {
   const circuit = extractNets(doc)
+  
+  // Validate before export
+  const validation = validateCircuitDoc(circuit)
+  if (!validation.valid) {
+    console.warn('Circuit validation warnings:', validation.errors)
+    // Continue with export but log warnings
+  }
+  
   return JSON.stringify(circuit, null, 2)
+}
+
+/**
+ * Validate circuit.v1 document for tscircuit compatibility
+ */
+export function validateCircuitDoc(circuit: CircuitDoc): { valid: boolean; errors: string[] } {
+  const errors: string[] = []
+  
+  // Check all refs are unique
+  const refs = new Set<string>()
+  for (const comp of circuit.components) {
+    if (refs.has(comp.ref)) {
+      errors.push(`Duplicate ref: ${comp.ref}`)
+    }
+    refs.add(comp.ref)
+  }
+  
+  // Check all refs in nets exist in components
+  for (let i = 0; i < circuit.nets.length; i++) {
+    const net = circuit.nets[i]
+    for (const node of net.nodes) {
+      if (!refs.has(node.ref)) {
+        errors.push(`Net ${i}: ref "${node.ref}" not found in components`)
+      }
+    }
+  }
+  
+  // Check symbolIds are tscircuit-compatible
+  const validSymbolIds = new Set(['R', 'C', 'L', 'D', 'LED', 'Q', 'chip', 'opamp', 'ground', 'power', 'netlabel'])
+  for (const comp of circuit.components) {
+    if (!validSymbolIds.has(comp.symbolId)) {
+      errors.push(`Component ${comp.ref}: invalid symbolId "${comp.symbolId}" (not tscircuit-compatible)`)
+    }
+  }
+  
+  return {
+    valid: errors.length === 0,
+    errors,
+  }
 }
