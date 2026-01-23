@@ -119,15 +119,17 @@ function generateRef(symbolId: string, index: number): string {
     'GND': 'GND',
     'VCC': 'VCC',
     'VDD': 'VDD',
+    'Tag': 'TAG',
   }
   
   const prefix = prefixMap[symbolId] || 'U'
   
-  // Special case: power symbols don't get numbered
+  // Special case: power symbols and tags don't get numbered
   if (['GND', 'VCC', 'VDD'].includes(symbolId)) {
     return symbolId
   }
   
+  // Tags get numbered: TAG1, TAG2, etc.
   return `${prefix}${index}`
 }
 
@@ -144,6 +146,29 @@ export function extractNets(doc: SchematicDoc): CircuitDoc {
       { instId: wire.a.instId, pinName: wire.a.pinName },
       { instId: wire.b.instId, pinName: wire.b.pinName }
     )
+  }
+  
+  // Connect all Tag instances with the same tag name
+  // Group tags by tag name
+  const tagGroups = new Map<string, typeof doc.instances[0][]>()
+  for (const inst of doc.instances) {
+    if (inst.symbolId === "Tag" && inst.tag) {
+      if (!tagGroups.has(inst.tag)) {
+        tagGroups.set(inst.tag, [])
+      }
+      tagGroups.get(inst.tag)!.push(inst)
+    }
+  }
+  
+  // For each tag group, union all instances together
+  for (const [tagName, instances] of tagGroups) {
+    if (instances.length < 2) continue
+    
+    // Connect all instances to the first one
+    const firstNode = { instId: instances[0].id, pinName: "TAG" }
+    for (let i = 1; i < instances.length; i++) {
+      uf.union(firstNode, { instId: instances[i].id, pinName: "TAG" })
+    }
   }
   
   // Get connected components (nets)
@@ -183,9 +208,26 @@ export function extractNets(doc: SchematicDoc): CircuitDoc {
       pin: node.pinName,
     }))
     
-    // Check if this net contains a power symbol (GND, VCC, VDD)
-    const powerNode = netNodes.find(n => ['GND', 'VCC', 'VDD'].includes(n.ref))
-    const netName = powerNode ? powerNode.ref : `NET${netIndex++}`
+    // Priority for net naming:
+    // 1. Tag name (if any Tag component is in this net)
+    // 2. Power symbol name (GND, VCC, VDD)
+    // 3. Auto-generated NET1, NET2, etc.
+    
+    // Find tag name from any Tag instance in this net
+    let netName: string | undefined
+    for (const node of nodes) {
+      const inst = doc.instances.find(i => i.id === node.instId)
+      if (inst?.symbolId === "Tag" && inst.tag) {
+        netName = inst.tag
+        break
+      }
+    }
+    
+    // If no tag, check for power symbols
+    if (!netName) {
+      const powerNode = netNodes.find(n => ['GND', 'VCC', 'VDD'].includes(n.ref))
+      netName = powerNode ? powerNode.ref : `NET${netIndex++}`
+    }
     
     nets.push({
       name: netName,

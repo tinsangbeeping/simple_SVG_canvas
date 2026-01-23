@@ -1,4 +1,4 @@
-import { listSymbols, getSymbolCount, clearAllSymbols, clearUserSymbols, setUseOnlyImportedSymbols, getUseOnlyImportedSymbols, registerSymbol } from "../symbol-lib/registry"
+import { listSymbols, getSymbolCount, clearAllSymbols, clearUserSymbols, setUseOnlyImportedSymbols, getUseOnlyImportedSymbols, registerSymbol, isCoreSymbol } from "../symbol-lib/registry"
 import type { SymbolDef } from "../symbol-dsl/types"
 import { useState, useEffect } from "react"
 import { SymbolSvg } from "./SymbolSvg"
@@ -42,6 +42,10 @@ export function SymbolLibraryPanel({ onPlaceSymbol, selectedSymbolId, onLibraryC
     s.id.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
+  // Split into core and imported symbols
+  const coreSymbols = filteredSymbols.filter((s) => isCoreSymbol(s.id))
+  const importedSymbols = filteredSymbols.filter((s) => !isCoreSymbol(s.id))
+
   // Get recent symbols that still exist in library
   const recentSymbolDefs = recentSymbols
     .map((id) => symbols.find((s) => s.id === id))
@@ -55,7 +59,7 @@ export function SymbolLibraryPanel({ onPlaceSymbol, selectedSymbolId, onLibraryC
   }
 
   function handleClearUserSymbols() {
-    if (confirm("Clear only user-imported symbols? Built-ins (R, GND) will remain.")) {
+    if (confirm("Clear only user-imported symbols? Core symbols will remain.")) {
       clearUserSymbols()
       if (onLibraryChange) onLibraryChange()
     }
@@ -361,33 +365,77 @@ export function SymbolLibraryPanel({ onPlaceSymbol, selectedSymbolId, onLibraryC
                 symbol={symbol}
                 isSelected={selectedSymbolId === symbol.id}
                 onPlace={() => handlePlaceSymbol(symbol.id)}
+                isCore={isCoreSymbol(symbol.id)}
               />
             ))}
           </div>
         </div>
       )}
 
-      {/* All symbols section */}
-      {filteredSymbols.length > 0 && (
+      {/* Core symbols section */}
+      {coreSymbols.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <h4
+            style={{
+              margin: "0 0 6px 0",
+              fontSize: 11,
+              fontWeight: "bold",
+              color: "#6a9aff",
+              textTransform: "uppercase",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            <span>🔧</span>
+            <span>Core Symbols</span>
+            <span style={{ fontSize: 9, color: "#888", fontWeight: "normal" }}>
+              ({coreSymbols.length})
+            </span>
+          </h4>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {coreSymbols.map((symbol) => (
+              <SymbolLibraryItem
+                key={symbol.id}
+                symbol={symbol}
+                isSelected={selectedSymbolId === symbol.id}
+                onPlace={() => handlePlaceSymbol(symbol.id)}
+                isCore={true}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Imported symbols section */}
+      {importedSymbols.length > 0 && (
         <div>
           <h4
             style={{
               margin: "0 0 6px 0",
               fontSize: 11,
               fontWeight: "bold",
-              color: "#888",
+              color: "#8a8aaa",
               textTransform: "uppercase",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
             }}
           >
-            {searchQuery ? `Results (${filteredSymbols.length})` : "All Symbols"}
+            <span>📦</span>
+            <span>Imported Symbols</span>
+            <span style={{ fontSize: 9, color: "#888", fontWeight: "normal" }}>
+              ({importedSymbols.length})
+            </span>
           </h4>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {filteredSymbols.map((symbol) => (
+            {importedSymbols.map((symbol) => (
               <SymbolLibraryItem
                 key={symbol.id}
                 symbol={symbol}
                 isSelected={selectedSymbolId === symbol.id}
                 onPlace={() => handlePlaceSymbol(symbol.id)}
+                isCore={false}
               />
             ))}
           </div>
@@ -407,9 +455,10 @@ interface SymbolLibraryItemProps {
   symbol: SymbolDef
   isSelected: boolean
   onPlace: () => void
+  isCore: boolean
 }
 
-function SymbolLibraryItem({ symbol, isSelected, onPlace }: SymbolLibraryItemProps) {
+function SymbolLibraryItem({ symbol, isSelected, onPlace, isCore }: SymbolLibraryItemProps) {
   const [showPreview, setShowPreview] = useState(false)
   
   return (
@@ -464,9 +513,27 @@ function SymbolLibraryItem({ symbol, isSelected, onPlace }: SymbolLibraryItemPro
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
             }}
           >
             {symbol.id}
+            {isCore && (
+              <span
+                style={{
+                  fontSize: 9,
+                  background: "#334488",
+                  color: "#88aaff",
+                  padding: "1px 4px",
+                  borderRadius: 2,
+                  fontWeight: "bold",
+                }}
+                title="Core symbol (non-deletable)"
+              >
+                CORE
+              </span>
+            )}
           </div>
           <div
             style={{

@@ -271,11 +271,26 @@ export function SchematicCanvas() {
     if (placementMode === "symbol" && selectedSymbolId) {
       const svg = e.currentTarget as SVGSVGElement
       const p = mouseToSvg(svg, e)
+      
+      // Prompt for tag name if placing a Tag symbol
+      let tagName: string | undefined
+      if (selectedSymbolId === "Tag") {
+        const defaultTags = ["NET1", "SCL", "SDA", "VREF", "MISO", "MOSI", "CLK", "RST"]
+        const suggestion = defaultTags[0]
+        const input = prompt(`Enter tag name for net label:`, suggestion)
+        if (input === null) {
+          // User cancelled
+          return
+        }
+        tagName = input.trim() || suggestion
+      }
+      
       const newInst: SymbolInstance = {
         id: `inst_${Date.now()}`,
         symbolId: selectedSymbolId,
         pos: { x: snap(p.x), y: snap(p.y) },
         rotDeg: 0,
+        ...(tagName && { tag: tagName }),
       }
       setDoc((prev) => ({ ...prev, instances: [...prev.instances, newInst] }))
       // Stay in placement mode for multiple placements
@@ -502,19 +517,38 @@ export function SchematicCanvas() {
   }
 
   function exportCircuitNetlist() {
-    const validation = validateSchematicDoc(doc)
-    if (!validation.valid) {
-      alert(`Validation errors:\n${formatValidationErrors(validation)}`)
-      return
+    try {
+      // Clean up document: remove wires referencing non-existent instances
+      const validInstanceIds = new Set(doc.instances.map(inst => inst.id))
+      const cleanedDoc = {
+        ...doc,
+        wires: doc.wires.filter(wire => 
+          validInstanceIds.has(wire.a.instId) && validInstanceIds.has(wire.b.instId)
+        )
+      }
+      
+      // Show warning if wires were removed
+      const removedWiresCount = doc.wires.length - cleanedDoc.wires.length
+      if (removedWiresCount > 0) {
+        console.warn(`Removed ${removedWiresCount} invalid wire(s) during netlist export`)
+      }
+      
+      const json = exportCircuitJSON(cleanedDoc)
+      const blob = new Blob([json], { type: "application/json" })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `circuit.v1.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      
+      if (removedWiresCount > 0) {
+        alert(`✓ Circuit JSON exported successfully\n\n⚠️ Note: ${removedWiresCount} invalid wire(s) were skipped.\nConsider cleaning up the schematic.`)
+      }
+    } catch (err) {
+      alert(`⚠️ Circuit JSON export failed:\n${err instanceof Error ? err.message : String(err)}`)
+      console.error('Circuit JSON export error:', err)
     }
-    const json = exportCircuitJSON(doc)
-    const blob = new Blob([json], { type: "application/json" })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement("a")
-    a.href = url
-    a.download = `circuit.v1.json`
-    a.click()
-    URL.revokeObjectURL(url)
   }
 
   function importJSON() {
@@ -790,8 +824,8 @@ export function SchematicCanvas() {
           <button onClick={exportJSON} style={{ padding: "4px 12px" }}>
             💾 Save
           </button>
-          <button onClick={exportCircuitNetlist} style={{ padding: "4px 12px", background: "#4a7a9a", border: "none", color: "white" }} title="Export netlist (circuit.v1.json)">
-            🔌 Netlist
+          <button onClick={exportCircuitNetlist} style={{ padding: "4px 12px", background: "#4a7a9a", border: "none", color: "white" }} title="Export circuit netlist (circuit.v1.json)">
+            🔌 Circuit JSON
           </button>
           <button onClick={importJSON} style={{ padding: "4px 12px" }}>
             📂 Load
@@ -856,6 +890,20 @@ export function SchematicCanvas() {
                   style={{ cursor: "grab" }}
                 >
                   <SymbolInstanceG inst={inst} />
+                  {/* Render tag name for Tag symbols */}
+                  {inst.symbolId === "Tag" && inst.tag && (
+                    <text
+                      x={inst.pos.x}
+                      y={inst.pos.y - 20}
+                      fill="#0f0"
+                      fontSize={10}
+                      textAnchor="middle"
+                      pointerEvents="none"
+                      fontWeight="bold"
+                    >
+                      {inst.tag}
+                    </text>
+                  )}
                   {isSingleSelected && (
                     <rect
                       x={inst.pos.x - 35}

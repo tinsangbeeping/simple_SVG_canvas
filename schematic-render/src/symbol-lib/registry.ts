@@ -1,6 +1,7 @@
 import type { SymbolDef } from "../symbol-dsl/types"
 import { computeSymbolBBox } from "../symbol-dsl/geometry"
-import { resistor, gnd } from "./basic"
+import { resistor as legacyR } from "./basic"
+import { coreSymbols, coreSymbolIds } from "./core"
 import { symbolFixtures } from "../fixtures/fixturesIndex"
 import { cleanupDeprecatedKeys, loadSymbols, saveSymbols } from "../storage"
 
@@ -14,11 +15,17 @@ function ensureBBox(symbol: SymbolDef): void {
 export const symbolRegistry: Record<string, SymbolDef> = {}
 
 function initializeRegistry(): void {
-  // First, add built-in symbols
-  ensureBBox(resistor)
-  ensureBBox(gnd)
-  symbolRegistry[resistor.id] = resistor
-  symbolRegistry[gnd.id] = gnd
+  // First, add all core symbols (built-in, non-deletable)
+  for (const symbol of coreSymbols) {
+    ensureBBox(symbol)
+    symbolRegistry[symbol.id] = symbol
+  }
+  
+  // Add legacy "R" alias for backward compatibility
+  if (!symbolRegistry["R"]) {
+    ensureBBox(legacyR)
+    symbolRegistry["R"] = legacyR
+  }
   
   // Auto-load baseline symbols from fixtures
   try {
@@ -36,23 +43,21 @@ function initializeRegistry(): void {
   try {
     const symbols = loadSymbols()
     for (const symbol of symbols) {
-      // Load stored symbols (don't override built-ins unless explicitly allowed)
-      if (!symbolRegistry[symbol.id]) {
+      // Load stored symbols (don't override core symbols)
+      if (!coreSymbolIds.has(symbol.id) && !symbolRegistry[symbol.id]) {
         ensureBBox(symbol)
         symbolRegistry[symbol.id] = symbol
       }
     }
     if (symbols.length > 0) {
       console.log(
-        `Loaded ${symbols.length} symbols from storage (+ ${Object.keys(symbolRegistry).length - symbols.length} built-ins)`
+        `Loaded ${symbols.length} symbols from storage (+ ${coreSymbols.length} core + ${Object.keys(symbolRegistry).length - symbols.length - coreSymbols.length} baseline)`
       )
     }
   } catch (err) {
     console.error("Failed to load symbols from storage:", err)
   }
   
-  // Note: "useOnlyImported" mode is no longer supported to avoid breaking schematics
-  // that reference built-in symbols. All custom symbols coexist with built-ins.
   cleanupDeprecatedKeys()
 }
 
@@ -84,6 +89,11 @@ export function getSymbolDef(symbolId: string): SymbolDef | null {
 }
 
 export function registerSymbol(symbol: SymbolDef, allowOverwrite = false): void {
+  // Prevent overwriting core symbols unless explicitly allowed
+  if (coreSymbolIds.has(symbol.id) && !allowOverwrite) {
+    throw new Error(`Cannot overwrite core symbol: ${symbol.id}`)
+  }
+  
   if (symbolRegistry[symbol.id] && !allowOverwrite) {
     throw new Error(`Symbol ${symbol.id} already exists`)
   }
@@ -96,6 +106,12 @@ export function registerSymbol(symbol: SymbolDef, allowOverwrite = false): void 
 }
 
 export function unregisterSymbol(symbolId: string): boolean {
+  // Prevent deleting core symbols
+  if (coreSymbolIds.has(symbolId)) {
+    console.warn(`Cannot delete core symbol: ${symbolId}`)
+    return false
+  }
+  
   if (symbolRegistry[symbolId]) {
     delete symbolRegistry[symbolId]
     saveToStorage()
@@ -113,11 +129,10 @@ export function getSymbolCount(): number {
 }
 
 export function clearUserSymbols(): void {
-  const builtInIds = new Set([resistor.id, gnd.id])
   const allIds = Object.keys(symbolRegistry)
   
   for (const id of allIds) {
-    if (!builtInIds.has(id)) {
+    if (!coreSymbolIds.has(id)) {
       delete symbolRegistry[id]
     }
   }
@@ -126,11 +141,17 @@ export function clearUserSymbols(): void {
 }
 
 export function clearAllSymbols(): void {
-  // Clear entire registry
+  // Clear entire registry except core symbols
   for (const key of Object.keys(symbolRegistry)) {
-    delete symbolRegistry[key]
+    if (!coreSymbolIds.has(key)) {
+      delete symbolRegistry[key]
+    }
   }
   saveToStorage()
+}
+
+export function isCoreSymbol(symbolId: string): boolean {
+  return coreSymbolIds.has(symbolId)
 }
 
 export function setUseOnlyImportedSymbols(_useOnly: boolean): void {

@@ -5,6 +5,7 @@ export type SymbolInstance = {
   symbolId: string
   pos: Point
   rotDeg: 0 | 90 | 180 | 270
+  tag?: string  // For Tag components: net label name
 }
 
 export type { Point }

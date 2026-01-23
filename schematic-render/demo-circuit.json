@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "symbols": [
+    {
+      "id": "s1",
+      "symbolId": "VCC",
+      "pos": { "x": 100, "y": 50 },
+      "rotation": 0
+    },
+    {
+      "id": "s2",
+      "symbolId": "resistor",
+      "pos": { "x": 100, "y": 120 },
+      "rotation": 90
+    },
+    {
+      "id": "s3",
+      "symbolId": "led",
+      "pos": { "x": 100, "y": 200 },
+      "rotation": 90
+    },
+    {
+      "id": "s4",
+      "symbolId": "GND",
+      "pos": { "x": 100, "y": 270 },
+      "rotation": 0
+    }
+  ],
+  "wires": [
+    {
+      "id": "w1",
+      "points": [
+        { "x": 100, "y": 65 },
+        { "x": 100, "y": 95 }
+      ]
+    },
+    {
+      "id": "w2",
+      "points": [
+        { "x": 100, "y": 145 },
+        { "x": 100, "y": 185 }
+      ]
+    },
+    {
+      "id": "w3",
+      "points": [
+        { "x": 100, "y": 215 },
+        { "x": 100, "y": 255 }
+      ]
+    }
+  ],
+  "labels": [
+    {
+      "id": "label1",
+      "pos": { "x": 10, "y": 20 },
+      "text": "Demo Circuit: VCC → R → LED → GND"
+    }
+  ]
+}
