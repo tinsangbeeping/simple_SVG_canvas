@@ -8,6 +8,9 @@ export type CircuitComponent = {
   symbolId: string
   value?: string
   footprint?: string
+  // For netlabel/tag components
+  net?: string  // The net name this label declares
+  schematic_net_label?: string  // Alternative tscircuit-style property
 }
 
 export type NetNode = {
@@ -22,8 +25,15 @@ export type Net = {
 
 export type CircuitDoc = {
   type: "circuit.v1"
+  version?: string  // Schema version
   components: CircuitComponent[]
   nets: Net[]
+  // Additional metadata for tscircuit compatibility
+  metadata?: {
+    exporter: string
+    exportDate: string
+    schematicVersion: number
+  }
 }
 
 /**
@@ -186,13 +196,22 @@ export function extractNets(doc: SchematicDoc): CircuitDoc {
     const ref = generateRef(symbolId, count + 1)
     instIdToRef.set(inst.id, ref)
     
-    return {
+    // Build component object
+    const component: CircuitComponent = {
       ref,
       symbolId,
       // Optional fields can be added later via UI
       // value: undefined,
       // footprint: undefined,
     }
+    
+    // Add netlabel/tag information for tscircuit compatibility
+    if (inst.symbolId === "Tag" && inst.tag) {
+      component.net = inst.tag
+      component.schematic_net_label = inst.tag
+    }
+    
+    return component
   })
   
   // Convert connected components to nets
@@ -237,8 +256,14 @@ export function extractNets(doc: SchematicDoc): CircuitDoc {
   
   return {
     type: "circuit.v1",
+    version: "1.0",
     components: circuitComponents,
     nets,
+    metadata: {
+      exporter: "schematic-render-canvas",
+      exportDate: new Date().toISOString(),
+      schematicVersion: doc.schemaVersion,
+    },
   }
 }
 
