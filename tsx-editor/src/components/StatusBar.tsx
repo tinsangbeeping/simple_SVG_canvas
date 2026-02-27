@@ -2,7 +2,7 @@ import React from 'react'
 import { useEditorStore } from '../store/editorStore'
 
 export const StatusBar: React.FC = () => {
-  const { wiringStart, selectedComponentIds, placedComponents, wires } = useEditorStore()
+  const { wiringStart, selectedComponentIds, placedComponents, wires, activeFilePath } = useEditorStore()
 
   const getMessage = () => {
     if (wiringStart) {
@@ -19,7 +19,7 @@ export const StatusBar: React.FC = () => {
       return `📝 Editing ${comp?.name} • Hold Ctrl/Cmd to select multiple`
     }
     
-    return `💡 Drag components from left panel • Click pins to connect • Ctrl+Click to multi-select • ${placedComponents.length} parts, ${wires.length} connections`
+    return `💡 ${activeFilePath} • Drag from Parts/Subcircuits • Click pins to connect • ${placedComponents.length} items, ${wires.length} connections`
   }
 
   return (

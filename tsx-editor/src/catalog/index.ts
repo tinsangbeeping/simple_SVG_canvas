@@ -5,19 +5,16 @@ import {
   SwitchItem, 
   LEDItem, 
   ChipItem,
+  CustomChipItem,
   InductorItem,
   DiodeItem,
   TransistorItem,
   PushButtonItem,
   PinHeaderItem,
-  TestPointItem
+  TestPointItem,
+  VoltageProbeItem,
+  VoltageSourceItem
 } from './parts'
-import { 
-  I2CPullupsItem, 
-  LEDWithResistorItem, 
-  VoltageDividerItem,
-  DecouplingCapItem 
-} from './patches'
 import {
   TraceItem,
   NetLabelItem,
@@ -44,10 +41,13 @@ export const CATALOG: Record<string, CatalogItem> = {
   led: LEDItem,
   transistor: TransistorItem,
   chip: ChipItem,
+  customchip: CustomChipItem,
   switch: SwitchItem,
   pushbutton: PushButtonItem,
   pinheader: PinHeaderItem,
   testpoint: TestPointItem,
+  voltageprobe: VoltageProbeItem,
+  voltagesource: VoltageSourceItem,
   
   // Connectivity
   trace: TraceItem,
@@ -64,11 +64,6 @@ export const CATALOG: Record<string, CatalogItem> = {
   schematicpath: SchematicPathItem,
   schematictext: SchematicTextItem,
   
-  // Patches
-  i2c_pullups: I2CPullupsItem,
-  led_with_resistor: LEDWithResistorItem,
-  voltage_divider: VoltageDividerItem,
-  decoupling_cap: DecouplingCapItem,
 }
 
 export function getCatalogItem(id: string): CatalogItem | undefined {
@@ -79,7 +74,7 @@ export function getAllCatalogItems(): CatalogItem[] {
   return Object.values(CATALOG)
 }
 
-export function getCatalogItemsByKind(kind: 'part' | 'patch'): CatalogItem[] {
+export function getCatalogItemsByKind(kind: 'part' | 'subcircuit'): CatalogItem[] {
   return Object.values(CATALOG).filter(item => item.metadata.kind === kind)
 }
 

@@ -128,6 +128,28 @@ export const COMPONENT_SCHEMATICS: Record<string, ComponentSchematic> = {
       { name: 'pin1', x: 10, y: 10, side: 'top' }
     ],
     symbol: 'testpoint'
+  },
+  'subcircuit-instance': {
+    width: 120,
+    height: 80,
+    pins: [],
+    symbol: 'subcircuit'
+  },
+  netport: {
+    width: 70,
+    height: 22,
+    pins: [
+      { name: 'port', x: 0, y: 11, side: 'left' }
+    ],
+    symbol: 'netport'
+  },
+  net: {
+    width: 64,
+    height: 22,
+    pins: [
+      { name: 'port', x: 62, y: 11, side: 'right' }
+    ],
+    symbol: 'net'
   }
 }
 

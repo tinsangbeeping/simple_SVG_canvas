@@ -9,16 +9,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@babel/generator": "^7.23.0",
+    "@babel/parser": "^7.23.0",
+    "@babel/traverse": "^7.23.0",
+    "@babel/types": "^7.23.0",
+    "@tscircuit/builder": "latest",
+    "@tscircuit/core": "latest",
+    "elkjs": "^0.8.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "@tscircuit/core": "latest",
-    "@tscircuit/builder": "latest",
-    "zustand": "^4.5.0",
-    "@babel/parser": "^7.23.0",
-    "@babel/generator": "^7.23.0",
-    "@babel/types": "^7.23.0",
-    "@babel/traverse": "^7.23.0",
-    "elkjs": "^0.8.0"
+    "web-worker": "^1.5.0",
+    "zustand": "^4.5.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

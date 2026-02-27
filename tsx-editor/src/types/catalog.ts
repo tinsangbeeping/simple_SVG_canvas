@@ -17,7 +17,7 @@ export interface EditablePropsSchema {
 export interface CatalogItemMetadata {
   id: string
   label: string
-  kind: 'part' | 'patch'
+  kind: 'part' | 'subcircuit'
   category?: string
   description?: string
   editablePropsSchema: EditablePropsSchema
@@ -59,14 +59,35 @@ export interface WireConnection {
   tsxSnippet?: string
 }
 
+export interface ExposedPortSelection {
+  componentId: string
+  pinName: string
+  portName: string
+}
+
+export interface SelectedPinRef {
+  componentId: string
+  pinName: string
+}
+
+export interface SubcircuitCreationState {
+  active: boolean
+  componentIds: string[]
+  candidatePins: SelectedPinRef[]
+  selectedPins: SelectedPinRef[]
+}
+
 // Editor state
 export interface EditorState {
   fsMap: FSMap
+  activeFilePath: string
+  breadcrumbStack: string[]
   selectedComponentIds: string[] // Changed to array for multi-select
   placedComponents: PlacedComponent[]
   wires: WireConnection[]
   wiringStart: { componentId: string; pinName: string } | null
   cursorNearPin: { componentId: string; pinName: string } | null
+  subcircuitCreation: SubcircuitCreationState
   viewport: {
     x: number
     y: number

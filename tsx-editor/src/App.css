@@ -37,7 +37,7 @@ code {
   top: 0;
   left: 0;
   right: 0;
-  height: 50px;
+  height: 74px;
   background: #2d2d2d;
   border-bottom: 1px solid #3e3e3e;
   display: flex;
@@ -92,7 +92,7 @@ code {
   border-right: 1px solid #3e3e3e;
   display: flex;
   flex-direction: column;
-  margin-top: 50px;
+  margin-top: 74px;
   overflow-y: auto;
 }
 
@@ -163,7 +163,7 @@ code {
 .canvas-container {
   flex: 1;
   position: relative;
-  margin-top: 50px;
+  margin-top: 74px;
   overflow: hidden;
   background: #1e1e1e;
 }
@@ -240,7 +240,7 @@ code {
   border-left: 1px solid #3e3e3e;
   display: flex;
   flex-direction: column;
-  margin-top: 50px;
+  margin-top: 74px;
   overflow-y: auto;
 }
 

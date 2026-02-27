@@ -20,7 +20,7 @@ function App() {
       
       <Canvas />
       
-      <div style={{ display: 'flex', flexDirection: 'column', width: 300, marginTop: 50 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', width: 300, marginTop: 74 }}>
         <PropertiesPanel />
         
         {/* Wiring connections */}

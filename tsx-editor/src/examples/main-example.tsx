@@ -1,18 +1,25 @@
-// Example main circuit using patches
-import { I2CPullups } from './lib/patches/I2CPullups'
-import { PowerSupply } from './lib/patches/PowerSupply'
+// Example main circuit using inline subcircuits
 
 export default function Circuit() {
   return (
     <board width="100mm" height="80mm">
       {/* Power supply section */}
-      <PowerSupply inputVoltage="12V" outputVoltage="5V" />
+      <subcircuit name="power_supply" schX={10} schY={10}>
+        <chip name="U1" manufacturerPartNumber="LM7805" />
+        <capacitor name="C1" capacitance="100uF" />
+        <trace from=".C1 > .pin1" to=".U1 > .VIN" />
+      </subcircuit>
       
       {/* Main microcontroller */}
       <chip name="U2" manufacturerPartNumber="ATMEGA328P" schX={50} schY={40} />
       
       {/* I2C pullups */}
-      <I2CPullups r="4.7k" />
+      <subcircuit name="i2c_pullups" schX={15} schY={22}>
+        <resistor name="R1" resistance="4.7k" />
+        <resistor name="R2" resistance="4.7k" />
+        <trace from=".R1 > .pin1" to="net.VCC" />
+        <trace from=".R2 > .pin1" to="net.VCC" />
+      </subcircuit>
       
       {/* Status LED with resistor */}
       <subcircuit name="status_led" schX={20} schY={60}>
