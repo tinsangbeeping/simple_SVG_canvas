@@ -137,39 +137,11 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart }) => {
           </div>
         ))}
 
-        {mode !== 'subcircuits' && (
-          <>
-            <div style={{ padding: '6px 4px 10px', color: '#888', fontSize: 11, fontWeight: 600 }}>
-              Components
-            </div>
-            {filteredParts.map((item) => (
-              <div
-                key={item.metadata.id}
-                className="catalog-item"
-                draggable
-                onDragStart={(e) => handleDragStart(e, item)}
-              >
-                <div className="catalog-item-label">{item.metadata.label}</div>
-                {item.metadata.description && (
-                  <div className="catalog-item-desc">{item.metadata.description}</div>
-                )}
-              </div>
-            ))}
-          </>
-        )}
-
         {mode !== 'components' && (
           <>
-            {mode === 'all' && (
-              <div style={{ padding: '12px 4px 10px', color: '#888', fontSize: 11, fontWeight: 600 }}>
-                Subcircuits
-              </div>
-            )}
-            {mode === 'subcircuits' && (
-              <div style={{ padding: '6px 4px 10px', color: '#888', fontSize: 11, fontWeight: 600 }}>
-                Subcircuits
-              </div>
-            )}
+            <div style={{ padding: mode === 'all' ? '12px 4px 10px' : '6px 4px 10px', color: '#888', fontSize: 11, fontWeight: 600 }}>
+              Subcircuits
+            </div>
             {filteredSubcircuits.length === 0 ? (
           <div style={{ padding: '12px 8px', color: '#888', fontSize: 12, lineHeight: 1.4 }}>
             {searchQuery ? 'No matching subcircuits.' : 'No subcircuits yet. Select components and click "Create Subcircuit".'}
@@ -206,6 +178,27 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart }) => {
             </div>
               ))
             )}
+          </>
+        )}
+
+        {mode !== 'subcircuits' && (
+          <>
+            <div style={{ padding: '6px 4px 10px', color: '#888', fontSize: 11, fontWeight: 600 }}>
+              Components
+            </div>
+            {filteredParts.map((item) => (
+              <div
+                key={item.metadata.id}
+                className="catalog-item"
+                draggable
+                onDragStart={(e) => handleDragStart(e, item)}
+              >
+                <div className="catalog-item-label">{item.metadata.label}</div>
+                {item.metadata.description && (
+                  <div className="catalog-item-desc">{item.metadata.description}</div>
+                )}
+              </div>
+            ))}
           </>
         )}
       </div>

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
+import { pixelToSchematic } from '../utils/coordinateScale'
 
 export const Header: React.FC = () => {
   const {
@@ -7,10 +8,14 @@ export const Header: React.FC = () => {
     placedComponents,
     applyLayout,
     selectedComponentIds,
+    rotateSelectedComponents,
     removeSelectedComponents,
     copySelectedComponents,
     pasteCopiedComponents,
-    generateParentChildrenStructure,
+    generateFlatCircuitTSX,
+    generateProjectStructure,
+    setCodeViewTab,
+    setExportPreview,
     activeFilePath,
     breadcrumbStack,
     goBackFile
@@ -23,6 +28,16 @@ export const Header: React.FC = () => {
   const [showExportDialog, setShowExportDialog] = useState(false)
   const [exportName, setExportName] = useState('MyComponent')
   const [isLayouting, setIsLayouting] = useState(false)
+
+  const downloadTextFile = (content: string, fileName: string) => {
+    const blob = new Blob([content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    link.click()
+    URL.revokeObjectURL(url)
+  }
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -50,22 +65,29 @@ export const Header: React.FC = () => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
         e.preventDefault()
         pasteCopiedComponents()
+        return
+      }
+
+      if (e.key.toLowerCase() === 'r' && selectedComponentIds.length > 0) {
+        e.preventDefault()
+        rotateSelectedComponents()
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedComponentIds, removeSelectedComponents, copySelectedComponents, pasteCopiedComponents])
+  }, [selectedComponentIds, removeSelectedComponents, copySelectedComponents, pasteCopiedComponents, rotateSelectedComponents])
 
   const handleExport = () => {
-    const mainTsx = fsMap['main.tsx']
-    const blob = new Blob([mainTsx], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'main.tsx'
-    a.click()
-    URL.revokeObjectURL(url)
+    const circuitTsx = generateFlatCircuitTSX() || fsMap['main.tsx'] || ''
+
+    setExportPreview({
+      fileName: 'circuit.tsx',
+      content: circuitTsx
+    })
+    setCodeViewTab('export')
+
+    downloadTextFile(circuitTsx, 'circuit.tsx')
   }
 
   const handleCopy = () => {
@@ -88,30 +110,55 @@ export const Header: React.FC = () => {
     const componentsTSX = placedComponents
       .filter(c => c.catalogId !== 'netport')
       .map(c => {
-        const localX = (c.props.schX || 0) - minX
-        const localY = (c.props.schY || 0) - minY
-        const propsStr = Object.entries(c.props)
-          .filter(([k]) => !['schX', 'schY', 'subcircuitName', 'ports', 'netName'].includes(k))
-          .map(([k, v]) => `${k}="${v}"`)
-          .join(' ')
+        const normalizedProps = { ...c.props }
+        if (c.catalogId === 'switch') {
+          if (normalizedProps.type === undefined && normalizedProps.variant !== undefined) {
+            normalizedProps.type = normalizedProps.variant
+          }
+          delete normalizedProps.variant
+          if (normalizedProps.footprint === undefined || normalizedProps.footprint === '') {
+            normalizedProps.footprint = 'pushbutton'
+          }
+        }
+
+        const localX = pixelToSchematic((c.props.schX || 0) - minX)
+        const localY = pixelToSchematic((c.props.schY || 0) - minY)
+        const coordX = Number.isInteger(localX) ? String(localX) : String(Number(localX.toFixed(3)))
+        const coordY = Number.isInteger(localY) ? String(localY) : String(Number(localY.toFixed(3)))
+        const propLines = Object.entries(normalizedProps)
+          .filter(([k]) => !['name', 'schX', 'schY', 'schRotation', 'subcircuitName', 'ports', 'netName'].includes(k))
+          .map(([k, v]) => {
+            if (typeof v === 'number') return `${k}={${v}}`
+            if (typeof v === 'boolean') return v ? k : ''
+            return `${k}="${v}"`
+          })
+          .filter(Boolean)
+
+        const rotation = String(normalizedProps.schRotation || '0deg')
 
         const tagName = c.catalogId === 'subcircuit-instance' ? c.props.subcircuitName : c.catalogId
-        return `      <${tagName} name="${c.name}" ${propsStr ? `${propsStr} ` : ''}schX={x + ${localX}} schY={y + ${localY}} />`
+        return [
+          `      {/* // schX={${coordX}} */}`,
+          `      {/* // schY={${coordY}} */}`,
+          `      <${tagName}`,
+          `        name="${c.name}"`,
+          ...propLines.map(line => `        ${line}`),
+          `        schRotation="${rotation}"`,
+          `      />`
+        ].join('\n')
       })
       .join('\n')
 
-    const exportedTSX = `export function ${exportName}(props: {\n  name: string\n  schX?: number\n  schY?: number\n}) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n${componentsTSX || '      {/* Add components here */}'}\n    </subcircuit>\n  )\n}\n`
+    const exportedTSX = `import React from "react"\n\nexport default function ${exportName}(props: {\n  name: string\n  schX?: number\n  schY?: number\n}) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n${componentsTSX || '      {/* Add components here */}'}\n    </subcircuit>\n  )\n}\n`
 
-    const blob = new Blob([exportedTSX], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${exportName}.tsx`
-    a.click()
-    URL.revokeObjectURL(url)
+    setExportPreview({
+      fileName: `${exportName}.tsx`,
+      content: exportedTSX
+    })
+    setCodeViewTab('export')
 
     setShowExportDialog(false)
-    alert(`Component exported as ${exportName}.tsx`)
+    alert(`Export preview opened: ${exportName}.tsx`)
   }
 
   const handleAutoLayout = async () => {
@@ -128,28 +175,16 @@ export const Header: React.FC = () => {
 
   const handleExportZip = () => {
     try {
-      const structure = generateParentChildrenStructure()
+      const structure = generateProjectStructure()
       const timestamp = Date.now()
 
-      const parentBlob = new Blob([structure.parent], { type: 'text/plain' })
-      const parentUrl = URL.createObjectURL(parentBlob)
-      const parentLink = document.createElement('a')
-      parentLink.href = parentUrl
-      parentLink.download = `circuit-main-${timestamp}.tsx`
-      parentLink.click()
-      URL.revokeObjectURL(parentUrl)
+      downloadTextFile(structure.parent, `circuit-${timestamp}.tsx`)
 
       Object.entries(structure.children).forEach(([path, content], index) => {
         const fileName = path.split('/').pop() || 'file.tsx'
-        const childBlob = new Blob([content], { type: 'text/plain' })
-        const childUrl = URL.createObjectURL(childBlob)
-        const childLink = document.createElement('a')
-        childLink.href = childUrl
-        childLink.download = `circuit-${fileName}`
 
         setTimeout(() => {
-          childLink.click()
-          URL.revokeObjectURL(childUrl)
+          downloadTextFile(content, `circuit-${fileName}`)
         }, 100 * (index + 1))
       })
 

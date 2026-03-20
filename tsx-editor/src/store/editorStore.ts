@@ -2,8 +2,14 @@ import { create } from 'zustand'
 import { getCatalogItem } from '../catalog'
 import { ExposedPortSelection, FSMap, PlacedComponent, EditorState, SelectedPinRef, WireConnection } from '../types/catalog'
 import { getPinConfig } from '../types/schematic'
+import { SCHEMATIC_COORD_SCALE, pixelToSchematic, schematicToPixel } from '../utils/coordinateScale'
 
 interface EditorStore extends EditorState {
+  codeViewTab: 'source' | 'export'
+  exportPreview: {
+    fileName: string
+    content: string
+  } | null
   copiedSelection: {
     components: PlacedComponent[]
     wires: WireConnection[]
@@ -17,6 +23,7 @@ interface EditorStore extends EditorState {
   updateFile: (filePath: string, content: string) => void
   addPlacedComponent: (component: PlacedComponent) => void
   updatePlacedComponent: (id: string, updates: Partial<PlacedComponent>) => void
+  rotateSelectedComponents: () => void
   removePlacedComponent: (id: string) => void
   removeSelectedComponents: () => void
   setSelectedComponents: (ids: string[]) => void
@@ -36,10 +43,14 @@ interface EditorStore extends EditorState {
   createSubcircuit: (name: string, componentIds: string[], exposedPorts: ExposedPortSelection[]) => void
   applyLayout: () => Promise<void>
   regenerateTSX: () => void
+  generateFlatCircuitTSX: () => string
+  generateProjectStructure: () => { parent: string; children: Record<string, string> }
   generateParentChildrenStructure: () => { parent: string; children: Record<string, string> }
+  setCodeViewTab: (tab: 'source' | 'export') => void
+  setExportPreview: (preview: { fileName: string; content: string } | null) => void
 }
 
-const DEFAULT_MAIN_TSX = `circuit.add(
+const DEFAULT_MAIN_TSX = `export default () => (
   <board width="50mm" height="50mm">
     {/* Add components here */}
   </board>
@@ -141,14 +152,23 @@ const parseComponentRef = (ref: string): { componentName: string; pinName: strin
 }
 
 const parseSchExpr = (expr: string, isSubcircuitFile: boolean): number => {
+  const toCanvasCoordinate = (value: number): number => {
+    // Legacy files stored canvas-pixel coordinates directly in schX/schY.
+    // Keep large literals in pixel space while converting schematic-unit values.
+    if (Math.abs(value) >= SCHEMATIC_COORD_SCALE * 10) {
+      return value
+    }
+    return schematicToPixel(value)
+  }
+
   const compact = expr.replace(/\s+/g, '')
   if (isSubcircuitFile) {
     const withOffset = compact.match(/^[xy]\+(-?\d+(?:\.\d+)?)$/)
-    if (withOffset) return Number(withOffset[1])
+    if (withOffset) return toCanvasCoordinate(Number(withOffset[1]))
   }
 
   const num = Number(compact)
-  return Number.isFinite(num) ? num : 0
+  return Number.isFinite(num) ? toCanvasCoordinate(num) : 0
 }
 
 const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: PlacedComponent[]; wires: WireConnection[] } => {
@@ -170,10 +190,19 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
 
   const componentRegex = /<([A-Za-z_][A-Za-z0-9_]*)\s+([^>]*?)\/>/g
   let componentMatch
+  let parseCursor = 0
 
   while ((componentMatch = componentRegex.exec(body)) !== null) {
     const tagName = componentMatch[1]
     const propsStr = componentMatch[2]
+    const leadingSegment = body.slice(parseCursor, componentMatch.index)
+    const schXCommentMatches = [...leadingSegment.matchAll(/\{\/\*\s*\/\/\s*schX=\{([^}]+)\}\s*\*\/\}/g)]
+    const schYCommentMatches = [...leadingSegment.matchAll(/\{\/\*\s*\/\/\s*schY=\{([^}]+)\}\s*\*\/\}/g)]
+    const schXCommentExpr = schXCommentMatches.length > 0 ? schXCommentMatches[schXCommentMatches.length - 1][1] : null
+    const schYCommentExpr = schYCommentMatches.length > 0 ? schYCommentMatches[schYCommentMatches.length - 1][1] : null
+
+    parseCursor = componentRegex.lastIndex
+
     if (tagName === 'trace' || tagName === 'board' || tagName === 'subcircuit') continue
 
     const attrRegex = /([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|\{([^}]*)\})/g
@@ -207,6 +236,24 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         const n = Number(exprValue)
         props[key] = Number.isFinite(n) ? n : exprValue.trim()
       }
+    }
+
+    if (tagName === 'switch') {
+      if (props.type === undefined && props.variant !== undefined) {
+        props.type = props.variant
+      }
+      delete props.variant
+      if (props.footprint === undefined || props.footprint === '') {
+        props.footprint = 'pushbutton'
+      }
+    }
+
+    if (props.schX === undefined && schXCommentExpr !== null) {
+      props.schX = parseSchExpr(schXCommentExpr, isSubcircuitFile)
+    }
+
+    if (props.schY === undefined && schYCommentExpr !== null) {
+      props.schY = parseSchExpr(schYCommentExpr, isSubcircuitFile)
     }
 
     if (!name) continue
@@ -360,7 +407,55 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     }
   }
 
-  return { components, wires }
+  const normalizeComponentsToViewport = (items: PlacedComponent[]): PlacedComponent[] => {
+    if (items.length === 0) return items
+
+    const points = items
+      .map((component) => ({
+        id: component.id,
+        x: Number(component.props.schX || 0),
+        y: Number(component.props.schY || 0)
+      }))
+
+    const minX = Math.min(...points.map(p => p.x))
+    const maxX = Math.max(...points.map(p => p.x))
+    const minY = Math.min(...points.map(p => p.y))
+    const maxY = Math.max(...points.map(p => p.y))
+
+    const width = Math.max(1, maxX - minX)
+    const height = Math.max(1, maxY - minY)
+
+    // Keep imported circuits in view so connected wires/components stay visible.
+    const targetWidth = 1200
+    const targetHeight = 700
+    const margin = 80
+
+    const scaleX = (targetWidth - margin * 2) / width
+    const scaleY = (targetHeight - margin * 2) / height
+    const scaleToFit = Math.min(scaleX, scaleY, 1)
+
+    const shouldScale = width > (targetWidth - margin * 2) || height > (targetHeight - margin * 2)
+    const scale = shouldScale ? Math.max(0.1, scaleToFit) : 1
+
+    return items.map((component) => {
+      const sourceX = Number(component.props.schX || 0)
+      const sourceY = Number(component.props.schY || 0)
+
+      const normalizedX = Math.round((sourceX - minX) * scale + margin)
+      const normalizedY = Math.round((sourceY - minY) * scale + margin)
+
+      return {
+        ...component,
+        props: {
+          ...component.props,
+          schX: normalizedX,
+          schY: normalizedY
+        }
+      }
+    })
+  }
+
+  return { components: normalizeComponentsToViewport(components), wires }
 }
 
 const getComponentTagName = (component: PlacedComponent): string => {
@@ -377,7 +472,7 @@ const toAttrString = (props: Record<string, any>): string => {
   const attrs: string[] = []
 
   Object.entries(props)
-    .filter(([key]) => !['name', 'schX', 'schY', 'subcircuitName', 'ports', 'netName'].includes(key))
+    .filter(([key]) => !['name', 'schX', 'schY', 'schRotation', 'subcircuitName', 'ports', 'netName'].includes(key))
     .forEach(([key, value]) => {
       if (value === undefined || value === null || value === '') return
       if (typeof value === 'number') {
@@ -398,16 +493,36 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
   if (component.catalogId === 'netport') return ''
 
   const tagName = getComponentTagName(component)
-  const attrs = toAttrString(component.props)
-  const name = String(component.props.name || component.name || '').trim()
-  const x = Number(component.props.schX || 0)
-  const y = Number(component.props.schY || 0)
-  const schXExpr = inSubcircuitFile ? `{x + ${x}}` : `{${x}}`
-  const schYExpr = inSubcircuitFile ? `{y + ${y}}` : `{${y}}`
-  const nameSegment = name ? `name="${name}" ` : ''
-  const attrSegment = attrs ? `${attrs} ` : ''
+  const normalizedProps = { ...component.props }
+  if (component.catalogId === 'switch') {
+    if (normalizedProps.type === undefined && normalizedProps.variant !== undefined) {
+      normalizedProps.type = normalizedProps.variant
+    }
+    delete normalizedProps.variant
+    if (normalizedProps.footprint === undefined || normalizedProps.footprint === '') {
+      normalizedProps.footprint = 'pushbutton'
+    }
+  }
 
-  return `<${tagName} ${nameSegment}${attrSegment}schX=${schXExpr} schY=${schYExpr} />`
+  const attrs = toAttrString(normalizedProps)
+  const name = String(normalizedProps.name || component.name || '').trim()
+  const x = pixelToSchematic(Number(normalizedProps.schX || 0))
+  const y = pixelToSchematic(Number(normalizedProps.schY || 0))
+  const coordX = Number.isInteger(x) ? String(x) : String(Number(x.toFixed(3)))
+  const coordY = Number.isInteger(y) ? String(y) : String(Number(y.toFixed(3)))
+  const schXExpr = inSubcircuitFile ? `{x + ${coordX}}` : `{${coordX}}`
+  const schYExpr = inSubcircuitFile ? `{y + ${coordY}}` : `{${coordY}}`
+  const propLines: string[] = []
+
+  if (name) propLines.push(`name="${name}"`)
+  if (attrs) propLines.push(...attrs.split(' '))
+  const rotation = String(normalizedProps.schRotation || '0deg')
+  propLines.push(`schRotation="${rotation}"`)
+  const commentX = inSubcircuitFile ? `x + ${coordX}` : coordX
+  const commentY = inSubcircuitFile ? `y + ${coordY}` : coordY
+
+  const multiline = [`{/* // schX={${commentX}} */}`, `{/* // schY={${commentY}} */}`, `<${tagName}`, ...propLines.map(line => `  ${line}`), '/>']
+  return multiline.join('\n')
 }
 
 const traceEndpointRef = (component: PlacedComponent | undefined, pinName: string): string | null => {
@@ -438,7 +553,7 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   const renderedComponents = components
     .map(component => createComponentSnippet(component, inSubcircuit))
     .filter(Boolean)
-    .map(line => `    ${line}`)
+    .map(line => line.split('\n').map(inner => `    ${inner}`).join('\n'))
 
   const renderedWires = wires
     .map(wire => createWireSnippet(wire, components))
@@ -458,14 +573,179 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
 
     const imports = [...importSet]
       .sort()
-      .map(name => `import { ${name} } from "./subcircuits/${name}"`)
+      .map(name => `import { ${name} } from "./${name}"`)
       .join('\n')
 
-    return `${imports ? `${imports}\n\n` : ''}circuit.add(\n  <board width="50mm" height="50mm">\n${body}\n  </board>\n)\n`
+    return `${imports ? `${imports}\n\n` : ''}export default () => (\n  <board width="50mm" height="50mm">\n${body}\n  </board>\n)\n`
   }
 
   const subcircuitName = filePath.replace('subcircuits/', '').replace('.tsx', '')
   return `export function ${subcircuitName}(props: { name: string; schX?: number; schY?: number }) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n${body}\n    </subcircuit>\n  )\n}\n`
+}
+
+const generateFlatMainTSX = (fsMap: FSMap): string => {
+  const rootPath = 'main.tsx'
+  const flatComponents: PlacedComponent[] = []
+  const flatWires: WireConnection[] = []
+  const netEndpointByName = new Map<string, string>()
+  const componentById = new Map<string, PlacedComponent>()
+  const parsedCache = new Map<string, { components: PlacedComponent[]; wires: WireConnection[] }>()
+  let idCounter = 0
+
+  const generateId = (prefix: string): string => `${prefix}-${idCounter++}`
+
+  const ensureNetEndpoint = (netName: string): string => {
+    const existing = netEndpointByName.get(netName)
+    if (existing) return existing
+
+    const id = generateId('net')
+    const endpoint: PlacedComponent = {
+      id,
+      catalogId: 'netport',
+      name: netName,
+      props: {
+        netName,
+        schX: 0,
+        schY: 0
+      },
+      tsxSnippet: ''
+    }
+
+    netEndpointByName.set(netName, id)
+    componentById.set(id, endpoint)
+    return id
+  }
+
+  const parseCached = (filePath: string): { components: PlacedComponent[]; wires: WireConnection[] } => {
+    const existing = parsedCache.get(filePath)
+    if (existing) return existing
+    const parsed = parseFileToCanvas(filePath, fsMap)
+    parsedCache.set(filePath, parsed)
+    return parsed
+  }
+
+  const expandFile = (
+    filePath: string,
+    offsetX: number,
+    offsetY: number,
+    instancePrefix: string,
+    pinNetMap?: Map<string, string>
+  ) => {
+    const parsed = parseCached(filePath)
+    const localIdMap = new Map<string, string>()
+    const localById = new Map(parsed.components.map(component => [component.id, component]))
+
+    parsed.components.forEach((component) => {
+      if (component.catalogId === 'subcircuit-instance') {
+        return
+      }
+
+      if (component.catalogId === 'netport') {
+        const localNet = String(component.props.netName || component.name || '').trim()
+        if (!localNet) return
+        const mappedNet = pinNetMap?.get(localNet) || `${instancePrefix}${localNet}`
+        localIdMap.set(component.id, ensureNetEndpoint(mappedNet))
+        return
+      }
+
+      const componentId = generateId('flat-comp')
+      const originalName = String(component.props.name || component.name || '')
+      const nextName = instancePrefix ? `${instancePrefix}${originalName}` : originalName
+      const nextComponent: PlacedComponent = {
+        ...component,
+        id: componentId,
+        name: nextName,
+        props: {
+          ...component.props,
+          name: nextName,
+          schX: Number(component.props.schX || 0) + offsetX,
+          schY: Number(component.props.schY || 0) + offsetY
+        }
+      }
+
+      localIdMap.set(component.id, componentId)
+      componentById.set(componentId, nextComponent)
+      flatComponents.push(nextComponent)
+    })
+
+    parsed.components
+      .filter(component => component.catalogId === 'subcircuit-instance')
+      .forEach((component) => {
+        const subName = String(component.props.subcircuitName || component.name || '').trim()
+        if (!subName) return
+
+        const nestedPrefixBase = instancePrefix ? `${instancePrefix}${component.name}` : String(component.name || subName)
+        const nestedPrefix = `${nestedPrefixBase}__`
+        const nestedPortMap = new Map<string, string>()
+        const ports = ((component.props.ports as string[] | undefined) || []).map(port => String(port))
+
+        ports.forEach((portName) => {
+          nestedPortMap.set(portName, `${nestedPrefix}${portName}`)
+        })
+
+        const subPath = `subcircuits/${subName}.tsx`
+        expandFile(
+          subPath,
+          offsetX + Number(component.props.schX || 0),
+          offsetY + Number(component.props.schY || 0),
+          nestedPrefix,
+          nestedPortMap
+        )
+      })
+
+    const resolveEndpoint = (endpoint: { componentId: string; pinName: string }): { componentId: string; pinName: string } | null => {
+      const component = localById.get(endpoint.componentId)
+      if (!component) return null
+
+      if (component.catalogId === 'subcircuit-instance') {
+        const nestedPrefixBase = instancePrefix ? `${instancePrefix}${component.name}` : String(component.name || component.props.subcircuitName || 'sub')
+        const netName = `${nestedPrefixBase}__${endpoint.pinName}`
+        return { componentId: ensureNetEndpoint(netName), pinName: 'port' }
+      }
+
+      const mapped = localIdMap.get(endpoint.componentId)
+      if (!mapped) return null
+
+      const mappedComponent = componentById.get(mapped)
+      if (mappedComponent?.catalogId === 'netport') {
+        return { componentId: mapped, pinName: 'port' }
+      }
+
+      return { componentId: mapped, pinName: endpoint.pinName }
+    }
+
+    parsed.wires.forEach((wire) => {
+      const from = resolveEndpoint(wire.from)
+      const to = resolveEndpoint(wire.to)
+      if (!from || !to) return
+
+      flatWires.push({
+        id: generateId('flat-wire'),
+        from,
+        to,
+        tsxSnippet: ''
+      })
+    })
+  }
+
+  expandFile(rootPath, 0, 0, '')
+
+  const renderedComponents = flatComponents
+    .map(component => createComponentSnippet(component, false))
+    .filter(Boolean)
+    .map(line => `    ${line}`)
+
+  const allComponentsForWires = [...componentById.values()]
+
+  const renderedWires = flatWires
+    .map(wire => createWireSnippet(wire, allComponentsForWires))
+    .filter(Boolean)
+    .map(line => `    ${line}`)
+
+  const body = [...renderedComponents, ...renderedWires]
+  const content = body.length > 0 ? body.join('\n') : '    {/* Add components here */}'
+
+  return `export default () => (\n  <board width="50mm" height="50mm">\n${content}\n  </board>\n)\n`
 }
 
 const initialFsMap = loadFSMapFromStorage()
@@ -477,6 +757,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   activeFilePath: 'main.tsx',
   breadcrumbStack: [],
   selectedComponentIds: [],
+  codeViewTab: 'source',
+  exportPreview: null,
   placedComponents: initialCanvas.components,
   wires: initialCanvas.wires,
   wiringStart: null,
@@ -511,7 +793,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     let fsMap = { ...state.fsMap }
     if (!fsMap[filePath] && filePath.startsWith('subcircuits/')) {
       const name = filePath.replace('subcircuits/', '').replace('.tsx', '')
-      fsMap[filePath] = `export function ${name}(props: { name: string; schX?: number; schY?: number }) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n      {/* Add components here */}\n    </subcircuit>\n  )\n}\n`
+      fsMap[filePath] = `export function ${name}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n      {/* Add components here */}\n    </subcircuit>\n  )\n}\n`
       fsMap = regenerateSubcircuitIndex(fsMap)
       saveFSMapToStorage(fsMap)
     }
@@ -539,7 +821,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     let fsMap = { ...state.fsMap }
     if (!fsMap[filePath]) {
-      fsMap[filePath] = `export function ${safe}(props: { name: string; schX?: number; schY?: number }) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n      {/* Add components here */}\n    </subcircuit>\n  )\n}\n`
+      fsMap[filePath] = `export function ${safe}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n      {/* Add components here */}\n    </subcircuit>\n  )\n}\n`
       fsMap = regenerateSubcircuitIndex(fsMap)
       saveFSMapToStorage(fsMap)
     }
@@ -600,6 +882,33 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     setTimeout(() => get().regenerateTSX(), 0)
     return { placedComponents: newComponents }
   }),
+
+  rotateSelectedComponents: () => {
+    const state = get()
+    if (state.selectedComponentIds.length === 0) return
+
+    const selectedSet = new Set(state.selectedComponentIds)
+    const nextComponents = state.placedComponents.map((component) => {
+      if (!selectedSet.has(component.id)) return component
+
+      const rawRotation = String(component.props.schRotation || '0deg').trim()
+      const parsed = Number(rawRotation.replace(/deg$/, ''))
+      const current = Number.isFinite(parsed) ? parsed : 0
+      const normalized = ((current % 360) + 360) % 360
+      const nextRotation = (normalized + 90) % 360
+
+      return {
+        ...component,
+        props: {
+          ...component.props,
+          schRotation: `${nextRotation}deg`
+        }
+      }
+    })
+
+    set({ placedComponents: nextComponents })
+    setTimeout(() => get().regenerateTSX(), 0)
+  },
 
   removePlacedComponent: (id) => set((state) => {
     const newComponents = state.placedComponents.filter((comp) => comp.id !== id)
@@ -1090,19 +1399,53 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     })
   },
 
-  generateParentChildrenStructure: () => {
+  generateFlatCircuitTSX: () => {
     const state = get()
-    const syncedMain = generateFileTSX('main.tsx', state.placedComponents, state.wires)
-    const files = regenerateSubcircuitIndex({
-      ...state.fsMap,
-      'main.tsx': syncedMain
-    })
+    const syncedFiles: FSMap = { ...state.fsMap }
+
+    // Always sync the currently edited file from live canvas state first.
+    syncedFiles[state.activeFilePath] = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
+
+    Object.keys(syncedFiles)
+      .filter(path => path === 'main.tsx' || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
+      .forEach((path) => {
+        const parsed = parseFileToCanvas(path, syncedFiles)
+        syncedFiles[path] = generateFileTSX(path, parsed.components, parsed.wires)
+      })
+
+    const files = regenerateSubcircuitIndex(syncedFiles)
+    return generateFlatMainTSX(files)
+  },
+
+  generateProjectStructure: () => {
+    const state = get()
+    const syncedFiles: FSMap = { ...state.fsMap }
+
+    // Always sync the currently edited file from live canvas state first.
+    syncedFiles[state.activeFilePath] = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
+
+    Object.keys(syncedFiles)
+      .filter(path => path === 'main.tsx' || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
+      .forEach((path) => {
+        const parsed = parseFileToCanvas(path, syncedFiles)
+        syncedFiles[path] = generateFileTSX(path, parsed.components, parsed.wires)
+      })
+
+    const files = regenerateSubcircuitIndex(syncedFiles)
+    const { ['main.tsx']: parent = '', ...children } = files
 
     return {
-      parent: files['main.tsx'] || '',
-      children: Object.fromEntries(
-        Object.entries(files).filter(([path]) => path !== 'main.tsx')
-      )
+      parent,
+      children
+    }
+  },
+
+  generateParentChildrenStructure: () => {
+    const structure = get().generateProjectStructure()
+
+    return {
+      parent: structure.parent,
+      children: structure.children
     }
   },
 
@@ -1158,5 +1501,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     saveFSMapToStorage(nextFsMap)
     set({ fsMap: nextFsMap })
-  }
+  },
+
+  setCodeViewTab: (tab) => set({ codeViewTab: tab }),
+
+  setExportPreview: (preview) => set({ exportPreview: preview })
 }))
