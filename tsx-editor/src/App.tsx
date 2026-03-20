@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { CatalogPanel } from './components/CatalogPanel'
 import { Canvas } from './components/Canvas'
 import { PropertiesPanel } from './components/PropertiesPanel'
@@ -6,11 +6,17 @@ import { Header } from './components/Header'
 import { CodeView } from './components/CodeView'
 import { WiringPanel } from './components/WiringPanel'
 import { StatusBar } from './components/StatusBar'
+import { useEditorStore } from './store/editorStore'
 import { CatalogItem } from './types/catalog'
 import './App.css'
 
 function App() {
   const [draggedItem, setDraggedItem] = useState<CatalogItem | null>(null)
+  const regenerateTSX = useEditorStore(state => state.regenerateTSX)
+
+  useEffect(() => {
+    regenerateTSX()
+  }, [regenerateTSX])
 
   return (
     <div className="editor-container">

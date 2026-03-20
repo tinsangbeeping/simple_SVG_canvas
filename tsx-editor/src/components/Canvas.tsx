@@ -37,6 +37,52 @@ export const Canvas: React.FC = () => {
     openSubcircuitEditor
   } = useEditorStore()
 
+  const normalizeRotation = (rotation: any): number => {
+    const raw = String(rotation || '0deg').trim()
+    const parsed = Number(raw.replace(/deg$/, ''))
+    const base = Number.isFinite(parsed) ? parsed : 0
+    return ((base % 360) + 360) % 360
+  }
+
+  const rotatePoint = (x: number, y: number, width: number, height: number, rotation: number) => {
+    if (rotation === 90) {
+      return { x: height - y, y: x }
+    }
+
+    if (rotation === 180) {
+      return { x: width - x, y: height - y }
+    }
+
+    if (rotation === 270) {
+      return { x: y, y: width - x }
+    }
+
+    return { x, y }
+  }
+
+  const getBaseComponentSize = (component: PlacedComponent) => {
+    if (component.catalogId === 'netport') {
+      return { width: 72, height: 22 }
+    }
+    if (component.catalogId === 'subcircuit-instance') {
+      const portCount = ((component.props.ports as string[] | undefined) || []).length
+      const rows = Math.max(1, Math.ceil(portCount / 2))
+      return { width: 130, height: Math.max(46, 28 + rows * 18) }
+    }
+    if (component.catalogId === 'customchip') {
+      const count = Math.max(2, Number(component.props.pinCount || 8))
+      return {
+        width: 100,
+        height: Math.max(80, 24 + Math.ceil(count / 2) * 20)
+      }
+    }
+    const schematic = getPinConfig(component.catalogId)
+    return {
+      width: schematic?.width || 60,
+      height: schematic?.height || 40
+    }
+  }
+
   const getDynamicPins = (component: PlacedComponent) => {
     if (component.catalogId === 'netport') {
       return [{ name: 'port', x: 0, y: 11 }]
@@ -90,34 +136,25 @@ export const Canvas: React.FC = () => {
   }
 
   const getComponentSize = (component: PlacedComponent) => {
-    if (component.catalogId === 'netport') {
-      return { width: 72, height: 22 }
+    const base = getBaseComponentSize(component)
+    const rotation = normalizeRotation(component.props.schRotation)
+    if (rotation === 90 || rotation === 270) {
+      return { width: base.height, height: base.width }
     }
-    if (component.catalogId === 'subcircuit-instance') {
-      const portCount = ((component.props.ports as string[] | undefined) || []).length
-      const rows = Math.max(1, Math.ceil(portCount / 2))
-      return { width: 130, height: Math.max(46, 28 + rows * 18) }
-    }
-    if (component.catalogId === 'customchip') {
-      const count = Math.max(2, Number(component.props.pinCount || 8))
-      return {
-        width: 100,
-        height: Math.max(80, 24 + Math.ceil(count / 2) * 20)
-      }
-    }
-    const schematic = getPinConfig(component.catalogId)
-    return {
-      width: schematic?.width || 60,
-      height: schematic?.height || 40
-    }
+    return base
   }
 
   const getPinPositionForComponent = (component: PlacedComponent, pinName: string): { x: number; y: number } | null => {
     const pin = getDynamicPins(component).find(p => p.name === pinName)
     if (!pin) return null
+
+    const base = getBaseComponentSize(component)
+    const rotation = normalizeRotation(component.props.schRotation)
+    const rotated = rotatePoint(pin.x, pin.y, base.width, base.height, rotation)
+
     return {
-      x: (component.props.schX || 0) + pin.x,
-      y: (component.props.schY || 0) + pin.y
+      x: (component.props.schX || 0) + rotated.x,
+      y: (component.props.schY || 0) + rotated.y
     }
   }
 
@@ -280,6 +317,11 @@ export const Canvas: React.FC = () => {
   // Handle component dragging
   const handleComponentMouseDown = (e: React.MouseEvent, componentId: string) => {
     e.stopPropagation()
+
+    if (e.ctrlKey || e.metaKey) {
+      toggleComponentSelection(componentId)
+      return
+    }
     
     // Check if clicking near a pin
     if (cursorNearPin && cursorNearPin.componentId === componentId) {
@@ -555,6 +597,8 @@ export const Canvas: React.FC = () => {
           {placedComponents.map((component) => {
             const pins = getDynamicPins(component)
             const { width, height } = getComponentSize(component)
+            const baseSize = getBaseComponentSize(component)
+            const rotation = normalizeRotation(component.props.schRotation)
             const isSelected = selectedComponentIds.includes(component.id)
             const isSubcircuit = component.catalogId === 'subcircuit-instance'
             const isNetPort = component.catalogId === 'netport'
@@ -628,7 +672,7 @@ export const Canvas: React.FC = () => {
                     position: 'absolute',
                     top: '50%',
                     left: '50%',
-                    transform: 'translate(-50%, -50%)',
+                    transform: `translate(-50%, -50%) rotate(${rotation}deg)`,
                     fontSize: 13,
                     color: '#ff9800',
                     fontWeight: 600,
@@ -656,12 +700,21 @@ export const Canvas: React.FC = () => {
                 )}
 
                 {!isSubcircuit && !isNetPort && (
-                  <SchematicSymbol 
-                    type={component.catalogId}
-                    width={width}
-                    height={height}
-                    color={isSelected ? '#007acc' : '#4CAF50'}
-                  />
+                  <div
+                    style={{
+                      width: baseSize.width,
+                      height: baseSize.height,
+                      transform: `rotate(${rotation}deg)`,
+                      transformOrigin: 'center center'
+                    }}
+                  >
+                    <SchematicSymbol
+                      type={component.catalogId}
+                      width={baseSize.width}
+                      height={baseSize.height}
+                      color={isSelected ? '#007acc' : '#4CAF50'}
+                    />
+                  </div>
                 )}
 
                 {isNet && (
@@ -685,6 +738,7 @@ export const Canvas: React.FC = () => {
 
                 {/* Render pins */}
                 {pins.map((pin) => {
+                  const rotatedPin = rotatePoint(pin.x, pin.y, baseSize.width, baseSize.height, rotation)
                   const isPinNearCursor = cursorNearPin?.componentId === component.id && cursorNearPin?.pinName === pin.name
                   const isPinWiringStart = wiringStart?.componentId === component.id && wiringStart?.pinName === pin.name
                   const pinKey = `${component.id}:${pin.name}`
@@ -701,8 +755,8 @@ export const Canvas: React.FC = () => {
                       className="component-pin"
                       style={{
                         position: 'absolute',
-                        left: pin.x - 5,
-                        top: pin.y - 5,
+                        left: rotatedPin.x - 5,
+                        top: rotatedPin.y - 5,
                         width: isPinNearCursor ? 12 : 10,
                         height: isPinNearCursor ? 12 : 10,
                         background: isPinSelectedForSubcircuit

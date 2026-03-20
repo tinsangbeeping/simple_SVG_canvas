@@ -102,31 +102,31 @@ export const CapacitorItem: CatalogItem = {
   }
 }
 
-// Switch with 4 variants
+// Switch with 4 types
 export const SwitchItem: CatalogItem = {
   metadata: {
     id: 'switch',
     label: 'Switch',
     kind: 'part',
     category: 'Electromechanical',
-    description: 'Switch with multiple variants',
+    description: 'Switch with multiple types',
     editablePropsSchema: {
       name: {
         type: 'string',
         label: 'Name',
         default: 'SW1'
       },
-      variant: {
+      type: {
         type: 'select',
-        label: 'Variant',
+        label: 'Type',
         default: 'spst',
         options: ['spst', 'spdt', 'dpst', 'dpdt']
       },
       footprint: {
         type: 'select',
         label: 'Footprint',
-        default: 'SMD-SWITCH',
-        options: ['SMD-SWITCH', 'THROUGH-HOLE']
+        default: 'pushbutton',
+        options: ['pushbutton', 'SMD-SWITCH', 'THROUGH-HOLE']
       },
       schX: {
         type: 'number',
@@ -141,15 +141,17 @@ export const SwitchItem: CatalogItem = {
     },
     defaultProps: {
       name: 'SW1',
-      variant: 'spst',
-      footprint: 'SMD-SWITCH',
+      type: 'spst',
+      footprint: 'pushbutton',
       schX: 0,
       schY: 0
     }
   },
   emitTSX: (props) => {
-    const { name, variant, footprint, schX, schY } = props
-    return `<switch name="${name}" variant="${variant}" footprint="${footprint}" schX={${schX}} schY={${schY}} />`
+    const { name, type, variant, footprint, schX, schY } = props
+    const switchType = type ?? variant ?? 'spst'
+    const switchFootprint = footprint || 'pushbutton'
+    return `<switch name="${name}" type="${switchType}" footprint="${switchFootprint}" schX={${schX}} schY={${schY}} />`
   }
 }
 
