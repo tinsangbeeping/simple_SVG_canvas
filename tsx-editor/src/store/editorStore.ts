@@ -3,6 +3,7 @@ import { getCatalogItem } from '../catalog'
 import { ExposedPortSelection, FSMap, PlacedComponent, EditorState, SelectedPinRef, WireConnection } from '../types/catalog'
 import { getPinConfig } from '../types/schematic'
 import { SCHEMATIC_COORD_SCALE, pixelToSchematic, schematicToPixel } from '../utils/coordinateScale'
+import { NetRegistry } from '../net/NetRegistry'
 
 interface EditorStore extends EditorState {
   codeViewTab: 'source' | 'export'
@@ -35,6 +36,7 @@ interface EditorStore extends EditorState {
   completeWiring: (componentId: string, pinName: string) => void
   cancelWiring: () => void
   removeWire: (wireId: string) => void
+  disconnectPin: (componentId: string, pinName: string) => void
   beginSubcircuitPinSelection: (componentIds: string[]) => void
   toggleSubcircuitPinSelection: (componentId: string, pinName: string) => void
   cancelSubcircuitPinSelection: () => void
@@ -46,6 +48,7 @@ interface EditorStore extends EditorState {
   generateFlatCircuitTSX: () => string
   generateProjectStructure: () => { parent: string; children: Record<string, string> }
   generateParentChildrenStructure: () => { parent: string; children: Record<string, string> }
+  importTSXIntoActiveFile: (content: string) => void
   setCodeViewTab: (tab: 'source' | 'export') => void
   setExportPreview: (preview: { fileName: string; content: string } | null) => void
 }
@@ -58,6 +61,33 @@ const DEFAULT_MAIN_TSX = `export default () => (
 `
 
 const DEFAULT_SUBCIRCUITS_INDEX = ''
+
+const getDefaultImportPosition = (index: number): { schX: number; schY: number } => ({
+  schX: 80 + (index % 4) * 140,
+  schY: 80 + Math.floor(index / 4) * 100
+})
+
+const normalizeImportedTSXContent = (content: string, activeFilePath: string): string => {
+  const trimmed = content.trim()
+
+  if (!trimmed) {
+    return activeFilePath === 'main.tsx'
+      ? DEFAULT_MAIN_TSX
+      : `export function ${activeFilePath.replace('subcircuits/', '').replace('.tsx', '')}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n      {/* Add components here */}\n    </subcircuit>\n  )\n}\n`
+  }
+
+  if (/<board[\s>]/.test(trimmed) || /<subcircuit[\s>]/.test(trimmed)) {
+    return trimmed
+  }
+
+  const indented = trimmed.split('\n').map(line => `    ${line}`).join('\n')
+  if (activeFilePath === 'main.tsx') {
+    return `export default () => (\n  <board width="50mm" height="50mm">\n${indented}\n  </board>\n)\n`
+  }
+
+  const name = activeFilePath.replace('subcircuits/', '').replace('.tsx', '')
+  return `export function ${name}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n${trimmed.split('\n').map(line => `      ${line}`).join('\n')}\n    </subcircuit>\n  )\n}\n`
+}
 
 const toSafeIdentifier = (raw: string): string => {
   const cleaned = raw.replace(/[^a-zA-Z0-9_]/g, '')
@@ -98,6 +128,7 @@ const ensureFsMapDefaults = (rawMap: FSMap): FSMap => {
 }
 
 const saveFSMapToStorage = (fsMap: FSMap) => {
+  if (typeof localStorage === 'undefined') return
   try {
     localStorage.setItem('editor_fsMap', JSON.stringify(fsMap))
   } catch (e) {
@@ -106,6 +137,10 @@ const saveFSMapToStorage = (fsMap: FSMap) => {
 }
 
 const loadFSMapFromStorage = (): FSMap => {
+  if (typeof localStorage === 'undefined') {
+    return ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX })
+  }
+
   try {
     const stored = localStorage.getItem('editor_fsMap')
     if (stored) {
@@ -151,6 +186,191 @@ const parseComponentRef = (ref: string): { componentName: string; pinName: strin
   return { componentName: m[1], pinName: m[2] }
 }
 
+class NetUnionFind {
+  private parent = new Map<string, string>()
+
+  add(id: string): void {
+    if (!this.parent.has(id)) {
+      this.parent.set(id, id)
+    }
+  }
+
+  find(id: string): string {
+    const current = this.parent.get(id)
+    if (!current) {
+      this.parent.set(id, id)
+      return id
+    }
+
+    if (current === id) return id
+    const root = this.find(current)
+    this.parent.set(id, root)
+    return root
+  }
+
+  union(a: string, b: string): void {
+    const ra = this.find(a)
+    const rb = this.find(b)
+    if (ra === rb) return
+    if (ra < rb) {
+      this.parent.set(rb, ra)
+      return
+    }
+    this.parent.set(ra, rb)
+  }
+}
+
+const isNetLikeComponent = (component: PlacedComponent | undefined): boolean => {
+  if (!component) return false
+  return component.catalogId === 'net' || component.catalogId === 'netport'
+}
+
+const getComponentNetName = (component: PlacedComponent): string => {
+  return String(component.props.netName || component.props.name || component.name || '').trim().toUpperCase()
+}
+
+const mergeElectricalNets = (
+  components: PlacedComponent[],
+  wires: WireConnection[]
+): { components: PlacedComponent[]; wires: WireConnection[] } => {
+  const byId = new Map(components.map(component => [component.id, component]))
+  const netLikeIds = components
+    .filter(component => isNetLikeComponent(component))
+    .map(component => component.id)
+
+  if (netLikeIds.length === 0) {
+    return { components, wires }
+  }
+
+  const uf = new NetUnionFind()
+  netLikeIds.forEach(id => uf.add(id))
+
+  wires.forEach((wire) => {
+    const fromComp = byId.get(wire.from.componentId)
+    const toComp = byId.get(wire.to.componentId)
+    if (!isNetLikeComponent(fromComp) || !isNetLikeComponent(toComp)) return
+    uf.union(wire.from.componentId, wire.to.componentId)
+  })
+
+  const groups = new Map<string, PlacedComponent[]>()
+  netLikeIds.forEach((id) => {
+    const component = byId.get(id)
+    if (!component) return
+    const root = uf.find(id)
+    const bucket = groups.get(root) || []
+    bucket.push(component)
+    groups.set(root, bucket)
+  })
+
+  const aliasToCanonicalName = new Map<string, string>()
+  const componentToRepresentative = new Map<string, string>()
+  const representativeToCanonicalName = new Map<string, string>()
+
+  groups.forEach((members) => {
+    const names = members
+      .map(getComponentNetName)
+      .filter(Boolean)
+      .sort()
+
+    const canonicalName = names[0] || 'NET'
+
+    members.forEach((member) => {
+      const alias = getComponentNetName(member)
+      if (alias) aliasToCanonicalName.set(alias, canonicalName)
+    })
+
+    const representative = [...members].sort((a, b) => {
+      const aNetPriority = a.catalogId === 'net' ? 0 : 1
+      const bNetPriority = b.catalogId === 'net' ? 0 : 1
+      if (aNetPriority !== bNetPriority) return aNetPriority - bNetPriority
+
+      const aNamePriority = getComponentNetName(a) === canonicalName ? 0 : 1
+      const bNamePriority = getComponentNetName(b) === canonicalName ? 0 : 1
+      if (aNamePriority !== bNamePriority) return aNamePriority - bNamePriority
+
+      return a.id.localeCompare(b.id)
+    })[0]
+
+    members.forEach((member) => {
+      componentToRepresentative.set(member.id, representative.id)
+    })
+    representativeToCanonicalName.set(representative.id, canonicalName)
+  })
+
+  const canonicalRegistry = new NetRegistry()
+  representativeToCanonicalName.forEach((name) => {
+    canonicalRegistry.getNetId(name)
+  })
+
+  const mergedComponents = components.map((component) => {
+    if (isNetLikeComponent(component)) {
+      const repId = componentToRepresentative.get(component.id) || component.id
+      const canonicalName = representativeToCanonicalName.get(repId) || getComponentNetName(component)
+      const netId = canonicalRegistry.getNetId(canonicalName)
+
+      if (component.catalogId === 'net') {
+        return {
+          ...component,
+          name: canonicalName,
+          props: {
+            ...component.props,
+            netId,
+            name: canonicalName
+          }
+        }
+      }
+
+      return {
+        ...component,
+        name: canonicalName,
+        props: {
+          ...component.props,
+          netId,
+          netName: canonicalName
+        }
+      }
+    }
+
+    if (component.catalogId === 'netlabel') {
+      const rawNet = String(component.props.net || component.props.netName || '').trim().toUpperCase()
+      if (!rawNet) return component
+      const canonicalName = aliasToCanonicalName.get(rawNet) || rawNet
+      const netId = canonicalRegistry.getNetId(canonicalName)
+
+      return {
+        ...component,
+        props: {
+          ...component.props,
+          net: canonicalName,
+          netId
+        }
+      }
+    }
+
+    return component
+  })
+
+  const mergedWires = wires.map((wire) => {
+    const remapEndpoint = (endpoint: { componentId: string; pinName: string }) => {
+      const comp = byId.get(endpoint.componentId)
+      if (!isNetLikeComponent(comp)) return endpoint
+      const repId = componentToRepresentative.get(endpoint.componentId) || endpoint.componentId
+      return { componentId: repId, pinName: 'port' }
+    }
+
+    return {
+      ...wire,
+      from: remapEndpoint(wire.from),
+      to: remapEndpoint(wire.to)
+    }
+  })
+
+  return {
+    components: mergedComponents,
+    wires: mergedWires
+  }
+}
+
 const parseSchExpr = (expr: string, isSubcircuitFile: boolean): number => {
   const toCanvasCoordinate = (value: number): number => {
     // Legacy files stored canvas-pixel coordinates directly in schX/schY.
@@ -187,10 +407,12 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   const components: PlacedComponent[] = []
   const wires: WireConnection[] = []
   const nameToId = new Map<string, string>()
+  const netRegistry = new NetRegistry()
 
   const componentRegex = /<([A-Za-z_][A-Za-z0-9_]*)\s+([^>]*?)\/>/g
   let componentMatch
   let parseCursor = 0
+  let defaultImportIndex = 0
 
   while ((componentMatch = componentRegex.exec(body)) !== null) {
     const tagName = componentMatch[1]
@@ -256,7 +478,28 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       props.schY = parseSchExpr(schYCommentExpr, isSubcircuitFile)
     }
 
-    if (!name) continue
+    if (props.schX === undefined && props.schY === undefined) {
+      const fallback = getDefaultImportPosition(defaultImportIndex++)
+      props.schX = fallback.schX
+      props.schY = fallback.schY
+    }
+
+    if (tagName === 'netlabel') {
+      const rawNet = String(props.net || '').trim()
+      if (rawNet) {
+        const netId = netRegistry.getNetId(rawNet)
+        props.netId = netId
+        props.net = netRegistry.getNetName(netId) || rawNet
+      }
+    }
+
+    if (!name) {
+      if (tagName === 'netlabel') {
+        name = `netlabel-${components.length + 1}`
+      } else {
+        continue
+      }
+    }
 
     const isCustomChip = tagName === 'chip' && (
       props.pinCount !== undefined ||
@@ -296,38 +539,55 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     if (component.catalogId !== 'net') return
     const netName = String(component.props.name || component.name || '').trim()
     if (!netName) return
-    const bucket = explicitNetComponents.get(netName) || []
+    const netId = netRegistry.getNetId(netName)
+    component.props = {
+      ...component.props,
+      netId
+    }
+    const bucket = explicitNetComponents.get(netId) || []
     bucket.push(component.id)
-    explicitNetComponents.set(netName, bucket)
+    explicitNetComponents.set(netId, bucket)
   })
 
-  const createNetPort = (portName: string, nearX: number, nearY: number): string => {
-    if (netPortComponents.has(portName)) {
-      return netPortComponents.get(portName)!
+  const createNetPort = (
+    portName: string,
+    nearX: number,
+    nearY: number,
+    options?: { implicitImported?: boolean }
+  ): string => {
+    const netId = netRegistry.getNetId(portName)
+    const canonicalName = netRegistry.getNetName(netId) || portName
+
+    if (netPortComponents.has(netId)) {
+      return netPortComponents.get(netId)!
     }
 
-    const id = `net-${filePath}-${portName}`
+    const id = `net-${filePath}-${netId}`
     const index = netPortComponents.size
     components.push({
       id,
       catalogId: 'netport',
-      name: portName,
+      name: canonicalName,
       props: {
-        netName: portName,
+        netId,
+        netName: canonicalName,
+        netAnchorKind: options?.implicitImported ? 'implicit-import' : 'generated-anchor',
+        isImplicitImportedNetAnchor: !!options?.implicitImported,
         schX: nearX + 24,
         schY: nearY + index * 12
       },
       tsxSnippet: ''
     })
 
-    netPortComponents.set(portName, id)
+    netPortComponents.set(netId, id)
     return id
   }
 
   const resolveNetComponent = (portName: string, nearX: number, nearY: number): string => {
-    const explicitIds = explicitNetComponents.get(portName) || []
+    const netId = netRegistry.getNetId(portName)
+    const explicitIds = explicitNetComponents.get(netId) || []
     if (explicitIds.length === 0) {
-      return createNetPort(portName, nearX, nearY)
+      return createNetPort(portName, nearX, nearY, { implicitImported: true })
     }
 
     if (explicitIds.length === 1) {
@@ -404,6 +664,18 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         to: { componentId: toId, pinName: toRef.pinName },
         tsxSnippet: ''
       })
+      continue
+    }
+
+    if (fromNet && toNet) {
+      const fromId = resolveNetComponent(fromNet[1], 0, 0)
+      const toId = resolveNetComponent(toNet[1], 40, 0)
+      wires.push({
+        id: `wire-${filePath}-${traceIndex++}`,
+        from: { componentId: fromId, pinName: 'port' },
+        to: { componentId: toId, pinName: 'port' },
+        tsxSnippet: ''
+      })
     }
   }
 
@@ -455,7 +727,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     })
   }
 
-  return { components: normalizeComponentsToViewport(components), wires }
+  const merged = mergeElectricalNets(components, wires)
+  return { components: normalizeComponentsToViewport(merged.components), wires: merged.wires }
 }
 
 const getComponentTagName = (component: PlacedComponent): string => {
@@ -468,11 +741,39 @@ const getComponentTagName = (component: PlacedComponent): string => {
   return component.catalogId
 }
 
+const sanitizeComponentName = (name: string): string => name.trim().replace(/^\.+/, '')
+
+const canonicalizeNetName = (value: string): string => value.trim().toUpperCase()
+
+const buildNetRegistryFromComponents = (components: PlacedComponent[]): NetRegistry => {
+  const registry = new NetRegistry()
+
+  components.forEach((component) => {
+    if (component.catalogId !== 'net' && component.catalogId !== 'netport') return
+    const rawName = String(component.props.netName || component.props.name || component.name || '').trim()
+    if (!rawName) return
+    registry.getNetId(rawName)
+  })
+
+  return registry
+}
+
 const toAttrString = (props: Record<string, any>): string => {
   const attrs: string[] = []
 
   Object.entries(props)
-    .filter(([key]) => !['name', 'schX', 'schY', 'schRotation', 'subcircuitName', 'ports', 'netName'].includes(key))
+    .filter(([key]) => ![
+      'name',
+      'schX',
+      'schY',
+      'schRotation',
+      'subcircuitName',
+      'ports',
+      'netName',
+      'netId',
+      'netAnchorKind',
+      'isImplicitImportedNetAnchor'
+    ].includes(key))
     .forEach(([key, value]) => {
       if (value === undefined || value === null || value === '') return
       if (typeof value === 'number') {
@@ -504,8 +805,30 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
     }
   }
 
+  if (component.catalogId === 'customchip') {
+    const pinCount = Math.max(2, Number(normalizedProps.pinCount || 8))
+    if (normalizedProps.footprint === undefined || normalizedProps.footprint === '') {
+      normalizedProps.footprint = pinCount === 8 ? 'soic8' : 'soic8'
+    }
+  }
+
+  if (component.catalogId === 'net') {
+    const rawNetName = String(normalizedProps.name || component.name || '').trim()
+    if (rawNetName) {
+      const canonical = canonicalizeNetName(rawNetName)
+      normalizedProps.name = canonical
+    }
+  }
+
+  if (component.catalogId === 'netlabel') {
+    const rawNetName = String(normalizedProps.net || normalizedProps.netName || '').trim()
+    if (rawNetName) {
+      normalizedProps.net = canonicalizeNetName(rawNetName)
+    }
+  }
+
   const attrs = toAttrString(normalizedProps)
-  const name = String(normalizedProps.name || component.name || '').trim()
+  const name = sanitizeComponentName(String(normalizedProps.name || component.name || ''))
   const x = pixelToSchematic(Number(normalizedProps.schX || 0))
   const y = pixelToSchematic(Number(normalizedProps.schY || 0))
   const coordX = Number.isInteger(x) ? String(x) : String(Number(x.toFixed(3)))
@@ -514,7 +837,7 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
   const schYExpr = inSubcircuitFile ? `{y + ${coordY}}` : `{${coordY}}`
   const propLines: string[] = []
 
-  if (name) propLines.push(`name="${name}"`)
+  if (name && component.catalogId !== 'netlabel') propLines.push(`name="${name}"`)
   if (attrs) propLines.push(...attrs.split(' '))
   const rotation = String(normalizedProps.schRotation || '0deg')
   propLines.push(`schRotation="${rotation}"`)
@@ -528,10 +851,14 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
 const traceEndpointRef = (component: PlacedComponent | undefined, pinName: string): string | null => {
   if (!component) return null
   if (component.catalogId === 'netport' || component.catalogId === 'net') {
-    const netName = component.props.netName || component.name
+    const rawNetName = String(component.props.netName || component.props.name || component.name || '').trim()
+    if (!rawNetName) return null
+    const netName = canonicalizeNetName(rawNetName)
     return `net.${netName}`
   }
-  return `.${component.name} > .${pinName}`
+  const cleanName = sanitizeComponentName(String(component.name || component.props.name || ''))
+  if (!cleanName) return null
+  return `.${cleanName} > .${pinName}`
 }
 
 const createWireSnippet = (wire: WireConnection, components: PlacedComponent[]): string => {
@@ -545,22 +872,114 @@ const createWireSnippet = (wire: WireConnection, components: PlacedComponent[]):
   return `<trace from="${from}" to="${to}" />`
 }
 
+const normalizeLogicalNets = (
+  components: PlacedComponent[],
+  wires: WireConnection[]
+): {
+  components: PlacedComponent[]
+  wires: WireConnection[]
+  duplicateNetComments: string[]
+} => {
+  const canonicalToPrimaryId = new Map<string, string>()
+  const duplicateToPrimaryId = new Map<string, string>()
+  const duplicateCounts = new Map<string, { displayName: string; count: number }>()
+
+  components.forEach((component) => {
+    if (component.catalogId !== 'net') return
+    const displayName = String(component.props.name || component.name || '').trim()
+    if (!displayName) return
+
+    const canonical = canonicalizeNetName(displayName)
+    const primaryId = canonicalToPrimaryId.get(canonical)
+    if (!primaryId) {
+      canonicalToPrimaryId.set(canonical, component.id)
+      return
+    }
+
+    duplicateToPrimaryId.set(component.id, primaryId)
+    const existing = duplicateCounts.get(canonical)
+    if (existing) {
+      existing.count += 1
+      return
+    }
+
+    duplicateCounts.set(canonical, { displayName, count: 1 })
+  })
+
+  const dedupedComponents = components
+    .filter(component => !duplicateToPrimaryId.has(component.id))
+    .map((component) => {
+      if (component.catalogId !== 'net') return component
+
+      const raw = String(component.props.name || component.name || '').trim()
+      if (!raw) return component
+
+      const canonical = canonicalizeNetName(raw)
+      return {
+        ...component,
+        name: canonical,
+        props: {
+          ...component.props,
+          name: canonical
+        }
+      }
+    })
+
+  const remappedWires = wires.map((wire) => {
+    const remapEndpoint = (endpoint: { componentId: string; pinName: string }) => ({
+      componentId: duplicateToPrimaryId.get(endpoint.componentId) || endpoint.componentId,
+      pinName: endpoint.pinName
+    })
+
+    return {
+      ...wire,
+      from: remapEndpoint(wire.from),
+      to: remapEndpoint(wire.to)
+    }
+  })
+
+  const duplicateNetComments = [...duplicateCounts.values()].map(({ displayName, count }) =>
+    `/* Duplicate net symbols for ${displayName} collapsed (${count + 1} visual instances -> 1 logical <net />) */`
+  )
+
+  return {
+    components: dedupedComponents,
+    wires: remappedWires,
+    duplicateNetComments
+  }
+}
+
 const generateFileTSX = (filePath: string, components: PlacedComponent[], wires: WireConnection[]): string => {
   const isMain = filePath === 'main.tsx'
   const inSubcircuit = !isMain
   const lines: string[] = []
 
-  const renderedComponents = components
+  const merged = mergeElectricalNets(components, wires)
+
+  const {
+    components: normalizedComponents,
+    wires: normalizedWires,
+    duplicateNetComments
+  } = normalizeLogicalNets(merged.components, merged.wires)
+
+  const renderedComponents = normalizedComponents
     .map(component => createComponentSnippet(component, inSubcircuit))
     .filter(Boolean)
     .map(line => line.split('\n').map(inner => `    ${inner}`).join('\n'))
 
-  const renderedWires = wires
-    .map(wire => createWireSnippet(wire, components))
+  const renderedWires = normalizedWires
+    // Drop self-loop wires produced by merging two net nodes into one
+    .filter(wire => wire.from.componentId !== wire.to.componentId)
+    .map(wire => createWireSnippet(wire, normalizedComponents))
     .filter(Boolean)
     .map(line => `    ${line}`)
 
-  lines.push(...renderedComponents, ...renderedWires)
+  lines.push(
+    // Only emit collapse comments when actual visual duplicates were collapsed
+    ...(duplicateNetComments.length > 0 ? duplicateNetComments.map(comment => `    ${comment}`) : []),
+    ...renderedComponents,
+    ...renderedWires
+  )
   const body = lines.length > 0 ? lines.join('\n') : '    {/* Add components here */}'
 
   if (isMain) {
@@ -1093,6 +1512,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     return { wires: newWires }
   }),
 
+  disconnectPin: (componentId, pinName) => set((state) => {
+    const newWires = state.wires.filter(w =>
+      !(w.from.componentId === componentId && w.from.pinName === pinName) &&
+      !(w.to.componentId === componentId && w.to.pinName === pinName)
+    )
+    setTimeout(() => get().regenerateTSX(), 0)
+    return { wires: newWires }
+  }),
+
   beginSubcircuitPinSelection: (componentIds) => {
     const state = get()
     const selectedSet = new Set(componentIds)
@@ -1191,17 +1619,26 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
 
     const nextComponents = [...state.placedComponents]
+    const netRegistry = buildNetRegistryFromComponents(nextComponents)
+    const netId = netRegistry.getNetId(sanitizedPort)
+    const canonicalName = netRegistry.getNetName(netId) || sanitizedPort
+
     let netPortComponent = nextComponents.find(
-      component => component.catalogId === 'netport' && (component.props.netName === sanitizedPort || component.name === sanitizedPort)
+      component => component.catalogId === 'netport' && (
+        component.props.netId === netId ||
+        component.props.netName === canonicalName ||
+        component.name === canonicalName
+      )
     )
 
     if (!netPortComponent) {
       netPortComponent = {
-        id: `net-${Date.now()}-${sanitizedPort}`,
+        id: `net-${Date.now()}-${netId}`,
         catalogId: 'netport',
-        name: sanitizedPort,
+        name: canonicalName,
         props: {
-          netName: sanitizedPort,
+          netId,
+          netName: canonicalName,
           schX: (sourceComponent.props.schX || 0) + 24,
           schY: sourceComponent.props.schY || 0
         },
@@ -1288,18 +1725,26 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       .filter(wire => selectedSet.has(wire.from.componentId) && selectedSet.has(wire.to.componentId))
       .map(wire => ({ ...wire }))
 
+    const subNetRegistry = buildNetRegistryFromComponents(subComponents)
+    const netIdToComponentId = new Map<string, string>()
     const portNameToNetId = new Map<string, string>()
     chosenPorts.forEach((port, index) => {
-      if (portNameToNetId.has(port.portName)) return
+      const netId = subNetRegistry.getNetId(port.portName)
+      const canonicalName = subNetRegistry.getNetName(netId) || port.portName
+      portNameToNetId.set(port.portName, netId)
+
+      if (netIdToComponentId.has(netId)) return
 
       const source = subComponents.find(c => c.id === port.componentId)
-      portNameToNetId.set(port.portName, `net-${safeName}-${port.portName}`)
+      const componentId = `net-${safeName}-${netId}`
+      netIdToComponentId.set(netId, componentId)
       subComponents.push({
-        id: `net-${safeName}-${port.portName}`,
+        id: componentId,
         catalogId: 'netport',
-        name: port.portName,
+        name: canonicalName,
         props: {
-          netName: port.portName,
+          netId,
+          netName: canonicalName,
           schX: (source?.props.schX || 0) + 24,
           schY: (source?.props.schY || 0) + index * 12
         },
@@ -1309,11 +1754,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     chosenPorts.forEach((port, index) => {
       const netId = portNameToNetId.get(port.portName)
-      if (!netId) return
+      const netComponentId = netId ? netIdToComponentId.get(netId) : undefined
+      if (!netComponentId) return
       internalWires.push({
         id: `wire-port-${Date.now()}-${index}`,
         from: { componentId: port.componentId, pinName: port.pinName },
-        to: { componentId: netId, pinName: 'port' },
+        to: { componentId: netComponentId, pinName: 'port' },
         tsxSnippet: ''
       })
     })
@@ -1449,6 +1895,29 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
   },
 
+  importTSXIntoActiveFile: (content) => {
+    const state = get()
+    const normalized = normalizeImportedTSXContent(content, state.activeFilePath)
+    const nextFsMap = regenerateSubcircuitIndex({
+      ...state.fsMap,
+      [state.activeFilePath]: normalized
+    })
+
+    saveFSMapToStorage(nextFsMap)
+
+    const parsed = parseFileToCanvas(state.activeFilePath, nextFsMap)
+    set({
+      fsMap: nextFsMap,
+      placedComponents: parsed.components,
+      wires: parsed.wires,
+      selectedComponentIds: [],
+      wiringStart: null,
+      cursorNearPin: null,
+      exportPreview: null,
+      codeViewTab: 'source'
+    })
+  },
+
   applyLayout: async () => {
     const state = get()
     const layoutTargets = state.placedComponents.filter(c => c.catalogId !== 'netport')
@@ -1507,3 +1976,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   setExportPreview: (preview) => set({ exportPreview: preview })
 }))
+
+export const minimalImportExportTestUtils = {
+  parseImportedTSXToCanvas: (content: string, filePath = 'main.tsx') => {
+    const normalized = normalizeImportedTSXContent(content, filePath)
+    const fsMap = ensureFsMapDefaults({ [filePath]: normalized })
+    return parseFileToCanvas(filePath, fsMap)
+  },
+  exportCanvasToTSX: (
+    filePath: string,
+    components: PlacedComponent[],
+    wires: WireConnection[]
+  ) => generateFileTSX(filePath, components, wires),
+  normalizeImportedTSXContent
+}

@@ -32,6 +32,8 @@ export const Canvas: React.FC = () => {
     startWiring,
     completeWiring,
     cancelWiring,
+    removeWire,
+    disconnectPin,
     toggleSubcircuitPinSelection,
     setCursorNearPin,
     openSubcircuitEditor
@@ -318,33 +320,46 @@ export const Canvas: React.FC = () => {
   const handleComponentMouseDown = (e: React.MouseEvent, componentId: string) => {
     e.stopPropagation()
 
+    const targetComponent = placedComponents.find(component => component.id === componentId)
+    if (!targetComponent) return
+
     if (e.ctrlKey || e.metaKey) {
       toggleComponentSelection(componentId)
       return
     }
     
     // Check if clicking near a pin
-    if (cursorNearPin && cursorNearPin.componentId === componentId) {
+    const isNetLikeSymbol =
+      targetComponent.catalogId === 'net' ||
+      targetComponent.catalogId === 'netport' ||
+      targetComponent.catalogId === 'netlabel'
+
+    if (cursorNearPin && cursorNearPin.componentId === componentId && !isNetLikeSymbol) {
       return // Let pin click handle it
     }
     
-    // Single select if not already selected
-    if (!selectedComponentIds.includes(componentId)) {
+    const isAlreadySelected = selectedComponentIds.includes(componentId)
+
+    // React state updates are async, so derive drag targets synchronously.
+    const dragTargetIds = isAlreadySelected ? selectedComponentIds : [componentId]
+
+    if (!isAlreadySelected) {
       setSelectedComponents([componentId])
     }
-    
+
     setDraggedComponentId(componentId)
-    
+
     const startX = e.clientX
     const startY = e.clientY
-    
-    // Get all selected components for group dragging
-    const selectedComps = placedComponents.filter(c => selectedComponentIds.includes(c.id))
-    const initialPositions = selectedComps.map(c => ({
-      id: c.id,
-      schX: c.props.schX || 0,
-      schY: c.props.schY || 0
-    }))
+
+    // Drag either the current selection or the clicked component.
+    const initialPositions = placedComponents
+      .filter(c => dragTargetIds.includes(c.id))
+      .map(c => ({
+        id: c.id,
+        schX: c.props.schX || 0,
+        schY: c.props.schY || 0
+      }))
 
     const handleMouseMove = (e: MouseEvent) => {
       const dx = e.clientX - startX
@@ -488,19 +503,37 @@ export const Canvas: React.FC = () => {
     const horizontalSpacing = Math.abs(toPos.x - fromPos.x) / 2
     const midX = fromPos.x + horizontalSpacing + routeOffset
     
+    const wirePath = `M ${fromPos.x} ${fromPos.y} L ${midX} ${fromPos.y} L ${midX} ${toPos.y} L ${toPos.x} ${toPos.y}`
+
     return (
       <g key={wire.id}>
+        {/* Visible wire */}
         <path
-          d={`M ${fromPos.x} ${fromPos.y} L ${midX} ${fromPos.y} L ${midX} ${toPos.y} L ${toPos.x} ${toPos.y}`}
+          d={wirePath}
           stroke="#2196F3"
           strokeWidth="3.5"
           fill="none"
           strokeLinecap="round"
           strokeLinejoin="round"
+          style={{ pointerEvents: 'none' }}
         />
-        {/* Add dots at connection points */}
-        <circle cx={fromPos.x} cy={fromPos.y} r="3" fill="#2196F3" />
-        <circle cx={toPos.x} cy={toPos.y} r="3" fill="#2196F3" />
+        {/* Invisible hit area — double-click to disconnect */}
+        <path
+          d={wirePath}
+          stroke="rgba(0,0,0,0.01)"
+          strokeWidth="14"
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+          onDoubleClick={(e) => {
+            e.stopPropagation()
+            removeWire(wire.id)
+          }}
+        />
+        {/* Dots at connection points */}
+        <circle cx={fromPos.x} cy={fromPos.y} r="3" fill="#2196F3" style={{ pointerEvents: 'none' }} />
+        <circle cx={toPos.x} cy={toPos.y} r="3" fill="#2196F3" style={{ pointerEvents: 'none' }} />
       </g>
     )
   }
@@ -564,14 +597,15 @@ export const Canvas: React.FC = () => {
         <div style={{ transform: `translate(${viewport.x}px, ${viewport.y}px)`, position: 'relative' }}>
           {/* Render wires as SVG */}
           <svg 
-            style={{ 
+            style={{
               position: 'absolute', 
               top: 0, 
               left: 0, 
               width: '4000px', 
               height: '4000px',
               pointerEvents: 'none',
-              overflow: 'visible'
+              overflow: 'visible',
+              zIndex: 5
             }}
             viewBox="0 0 4000 4000"
           >
@@ -776,7 +810,11 @@ export const Canvas: React.FC = () => {
                         transform: isPinNearCursor ? 'scale(1.3)' : 'scale(1)'
                       }}
                       onClick={(e) => handlePinClick(e, component.id, pin.name)}
-                      title={`${component.name}.${pin.name}`}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation()
+                        disconnectPin(component.id, pin.name)
+                      }}
+                      title={`${component.name}.${pin.name} — double-click to disconnect`}
                     />
                   )
                 })}

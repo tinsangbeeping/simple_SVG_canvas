@@ -14,6 +14,7 @@ export const Header: React.FC = () => {
     pasteCopiedComponents,
     generateFlatCircuitTSX,
     generateProjectStructure,
+    importTSXIntoActiveFile,
     setCodeViewTab,
     setExportPreview,
     activeFilePath,
@@ -26,6 +27,8 @@ export const Header: React.FC = () => {
     : activeFilePath.replace('subcircuits/', '')
 
   const [showExportDialog, setShowExportDialog] = useState(false)
+  const [showImportDialog, setShowImportDialog] = useState(false)
+  const [importContent, setImportContent] = useState('')
   const [exportName, setExportName] = useState('MyComponent')
   const [isLayouting, setIsLayouting] = useState(false)
 
@@ -94,6 +97,19 @@ export const Header: React.FC = () => {
     const currentTsx = fsMap[activeFilePath] || ''
     navigator.clipboard.writeText(currentTsx)
     alert(`Copied ${activeFilePath} to clipboard`) 
+  }
+
+  const handleImport = () => {
+    if (!importContent.trim()) return
+
+    try {
+      importTSXIntoActiveFile(importContent)
+      setShowImportDialog(false)
+      setImportContent('')
+      alert(`Imported TSX into ${activeFilePath}`)
+    } catch (error) {
+      alert('Import failed: ' + (error as Error).message)
+    }
   }
 
   const handleExportAsComponent = () => {
@@ -205,6 +221,9 @@ export const Header: React.FC = () => {
           <button className="btn btn-secondary" onClick={handleExportZip} disabled={placedComponents.length === 0}>
             Export Structure
           </button>
+          <button className="btn btn-secondary" onClick={() => setShowImportDialog(true)}>
+            Import TSX
+          </button>
           <button className="btn btn-secondary" onClick={handleCopy}>Copy TSX</button>
           <button className="btn btn-secondary" onClick={handleExport}>Export Circuit</button>
           <button className="btn btn-primary" onClick={() => setShowExportDialog(true)}>
@@ -261,6 +280,54 @@ export const Header: React.FC = () => {
                 Export Component
               </button>
               <button className="btn btn-secondary" onClick={() => setShowExportDialog(false)} style={{ flex: 1 }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImportDialog && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{ background: '#2d2d2d', padding: 30, borderRadius: 8, minWidth: 640, maxWidth: 820, border: '1px solid #3e3e3e' }}>
+            <h2 style={{ marginBottom: 20, fontSize: 18 }}>Import Minimal TSX</h2>
+            <div style={{ marginBottom: 12, fontSize: 12, color: '#aaa' }}>
+              Supported for this milestone: {'<chip />'}, {'<net />'}, and {'<trace from="..." to="..." />'}.
+            </div>
+            <textarea
+              value={importContent}
+              onChange={(e) => setImportContent(e.target.value)}
+              placeholder={'Paste a <board>...</board>, <subcircuit>...</subcircuit>, or raw <chip /> / <net /> / <trace /> lines'}
+              style={{
+                width: '100%',
+                minHeight: 260,
+                resize: 'vertical',
+                background: '#1e1e1e',
+                border: '1px solid #3e3e3e',
+                color: '#d4d4d4',
+                padding: 12,
+                fontFamily: 'monospace',
+                fontSize: 13,
+                borderRadius: 6,
+                marginBottom: 16
+              }}
+            />
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn btn-primary" onClick={handleImport} style={{ flex: 1 }}>
+                Import Into Current File
+              </button>
+              <button className="btn btn-secondary" onClick={() => setShowImportDialog(false)} style={{ flex: 1 }}>
                 Cancel
               </button>
             </div>
