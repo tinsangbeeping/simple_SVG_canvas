@@ -5,9 +5,10 @@ import { useEditorStore } from '../store/editorStore'
 
 interface CatalogPanelProps {
   onDragStart: (item: CatalogItem) => void
+  embedded?: boolean
 }
 
-export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart }) => {
+export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedded = false }) => {
   const [searchQuery, setSearchQuery] = useState('')
   const [mode, setMode] = useState<'all' | 'components' | 'subcircuits'>('all')
   const { fsMap, setFSMap } = useEditorStore()
@@ -69,10 +70,8 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart }) => {
     }
   }
 
-  return (
-    <div className="left-panel">
-      <div className="panel-header">Component Library</div>
-      
+  const panelContent = (
+    <>
       {/* Search bar */}
       <div style={{ padding: '8px 12px', borderBottom: '1px solid #3e3e3e' }}>
         <input
@@ -202,6 +201,17 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart }) => {
           </>
         )}
       </div>
+    </>
+  )
+
+  if (embedded) {
+    return <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>{panelContent}</div>
+  }
+
+  return (
+    <div className="left-panel">
+      <div className="panel-header">Component Library</div>
+      {panelContent}
     </div>
   )
 }

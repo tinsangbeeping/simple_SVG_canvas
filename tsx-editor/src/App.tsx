@@ -1,10 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { CatalogPanel } from './components/CatalogPanel'
 import { Canvas } from './components/Canvas'
-import { PropertiesPanel } from './components/PropertiesPanel'
 import { Header } from './components/Header'
-import { CodeView } from './components/CodeView'
-import { WiringPanel } from './components/WiringPanel'
 import { StatusBar } from './components/StatusBar'
 import { FileTree } from './components/FileTree'
 import { EnhancedPropertiesPanel } from './components/EnhancedPropertiesPanel'
@@ -15,6 +12,7 @@ import './App.css'
 
 function App() {
   const [draggedItem, setDraggedItem] = useState<CatalogItem | null>(null)
+  const [leftPanelTab, setLeftPanelTab] = useState<'files' | 'components'>('files')
   const regenerateTSX = useEditorStore(state => state.regenerateTSX)
   const fsMap = useEditorStore(state => state.fsMap)
   const activeFilePath = useEditorStore(state => state.activeFilePath)
@@ -49,23 +47,39 @@ function App() {
       <Header />
       
       <div style={{ display: 'flex', flex: 1, marginTop: 74, overflow: 'hidden' }}>
-        {/* Left Panel - File Tree */}
+        {/* Left Panel - Files/Components switcher */}
         <div style={{ width: 250, background: '#252526', borderRight: '1px solid #3e3e3e', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: '10px 15px', background: '#2d2d2d', borderBottom: '1px solid #3e3e3e', fontSize: '13px', fontWeight: 500 }}>
-            📁 Project Files
+          <div style={{ display: 'flex', background: '#2d2d2d', borderBottom: '1px solid #3e3e3e' }}>
+            <button
+              className={`catalog-tab ${leftPanelTab === 'files' ? 'active' : ''}`}
+              onClick={() => setLeftPanelTab('files')}
+              style={{ flex: 1 }}
+            >
+              Files
+            </button>
+            <button
+              className={`catalog-tab ${leftPanelTab === 'components' ? 'active' : ''}`}
+              onClick={() => setLeftPanelTab('components')}
+              style={{ flex: 1 }}
+            >
+              Components
+            </button>
           </div>
           <div style={{ flex: 1, overflowY: 'auto' }}>
-            <FileTree 
-              root={projectFileTree} 
-              onFileSelect={setActiveFilePath}
-              activeFilePath={activeFilePath}
-            />
+            {leftPanelTab === 'files' ? (
+              <FileTree 
+                root={projectFileTree} 
+                onFileSelect={setActiveFilePath}
+                activeFilePath={activeFilePath}
+              />
+            ) : (
+              <CatalogPanel onDragStart={setDraggedItem} embedded />
+            )}
           </div>
         </div>
 
-        {/* Center - Canvas & Catalog */}
+        {/* Center - Canvas */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <CatalogPanel onDragStart={setDraggedItem} />
           <Canvas />
         </div>
         
