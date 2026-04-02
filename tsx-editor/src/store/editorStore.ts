@@ -1,5 +1,10 @@
 import { create } from 'zustand'
 import { getCatalogItem } from '../catalog'
+import { loadEditorMeta, saveEditorMeta, getNetAnchor, setNetAnchor } from './metaHelpers'
+import * as parser from '@babel/parser'
+
+// Round 0 DEBUG — set to true in browser console: window.__NETPORT_DEBUG = true
+const NETPORT_DEBUG = () => !!(window as any).__NETPORT_DEBUG
 import { ExposedPortSelection, FSMap, PlacedComponent, EditorState, SelectedPinRef, WireConnection } from '../types/catalog'
 import { getPinConfig } from '../types/schematic'
 import { SCHEMATIC_COORD_SCALE, pixelToSchematic, schematicToPixel } from '../utils/coordinateScale'
@@ -117,6 +122,10 @@ const ensureFsMapDefaults = (rawMap: FSMap): FSMap => {
     fsMap['subcircuits/index.ts'] = DEFAULT_SUBCIRCUITS_INDEX
   }
 
+  if (!fsMap['editor/meta.json']) {
+    fsMap['editor/meta.json'] = JSON.stringify({ netAnchors: {} }, null, 2)
+  }
+
   // Migrate old patches/* files to subcircuits/*
   Object.entries(rawMap).forEach(([path, content]) => {
     if (path.startsWith('patches/') && path.endsWith('.tsx')) {
@@ -152,9 +161,58 @@ const loadFSMapFromStorage = (): FSMap => {
   return ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX })
 }
 
+const extractExplicitSubcircuitPorts = (content: string): string[] | null => {
+  try {
+    const ast = parser.parse(content, {
+      sourceType: 'module',
+      plugins: ['jsx', 'typescript']
+    })
+
+    for (const node of ast.program.body) {
+      if (node.type !== 'ExportNamedDeclaration') continue
+      const declaration = node.declaration
+      if (!declaration || declaration.type !== 'VariableDeclaration') continue
+
+      for (const decl of declaration.declarations) {
+        if (decl.id.type !== 'Identifier' || decl.id.name !== 'ports') continue
+
+        const init = decl.init
+        if (!init) return null
+
+        const arrayExpr =
+          init.type === 'TSAsExpression' || init.type === 'TSSatisfiesExpression'
+            ? init.expression
+            : init
+
+        if (arrayExpr.type !== 'ArrayExpression') return null
+
+        const values: string[] = []
+        for (const element of arrayExpr.elements) {
+          if (!element || element.type !== 'StringLiteral') return null
+          values.push(element.value)
+        }
+
+        return values
+      }
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
 const getSubcircuitPorts = (fsMap: FSMap, name: string): string[] => {
   const filePath = `subcircuits/${name}.tsx`
   const content = fsMap[filePath] || ''
+
+  const explicitPorts = extractExplicitSubcircuitPorts(content)
+  if (explicitPorts) {
+    return explicitPorts
+  }
+
+  console.warn(`[subcircuit ports] Falling back to net.* scan for ${filePath}; add \`export const ports = [\"...\"] as const\``)
+
   const ports = new Set<string>()
   const netRegex = /net\.([A-Za-z_][A-Za-z0-9_]*)/g
   let m
@@ -227,6 +285,25 @@ const isNetLikeComponent = (component: PlacedComponent | undefined): boolean => 
 
 const getComponentNetName = (component: PlacedComponent): string => {
   return String(component.props.netName || component.props.name || component.name || '').trim().toUpperCase()
+}
+
+const getOrphanedNetportsAfterRemovingWires = (
+  components: PlacedComponent[],
+  currentWires: WireConnection[],
+  removedWireIds: Set<string>
+): string[] => {
+  const remainingWires = currentWires.filter(wire => !removedWireIds.has(wire.id))
+  const connectedComponentIds = new Set<string>()
+
+  remainingWires.forEach((wire) => {
+    connectedComponentIds.add(wire.from.componentId)
+    connectedComponentIds.add(wire.to.componentId)
+  })
+
+  return components
+    .filter(component => component.catalogId === 'netport' && !connectedComponentIds.has(component.id))
+    .map(component => String(component.props.netName || component.name || '').trim())
+    .filter(Boolean)
 }
 
 const mergeElectricalNets = (
@@ -549,6 +626,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     explicitNetComponents.set(netId, bucket)
   })
 
+  const _editorMeta = loadEditorMeta(fsMap)
+
   const createNetPort = (
     portName: string,
     nearX: number,
@@ -564,6 +643,10 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
 
     const id = `net-${filePath}-${netId}`
     const index = netPortComponents.size
+    const savedAnchor = getNetAnchor(_editorMeta, filePath, canonicalName)
+    const schX = savedAnchor ? savedAnchor.schX : nearX + 24
+    const schY = savedAnchor ? savedAnchor.schY : nearY + index * 12
+    if (NETPORT_DEBUG()) console.log('[netport:create]', { netName: canonicalName, id, schX, schY, fromMeta: !!savedAnchor, kind: options?.implicitImported ? 'implicit-import' : 'generated-anchor' })
     components.push({
       id,
       catalogId: 'netport',
@@ -573,8 +656,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         netName: canonicalName,
         netAnchorKind: options?.implicitImported ? 'implicit-import' : 'generated-anchor',
         isImplicitImportedNetAnchor: !!options?.implicitImported,
-        schX: nearX + 24,
-        schY: nearY + index * 12
+        schX,
+        schY
       },
       tsxSnippet: ''
     })
@@ -1298,8 +1381,30 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const newComponents = state.placedComponents.map((component) =>
       component.id === id ? { ...component, ...updates } : component
     )
+
+    // Persist netport position into editor/meta.json so it survives regeneration
+    const updatedComp = newComponents.find(c => c.id === id)
+    let nextFsMap = state.fsMap
+    if (
+      updatedComp?.catalogId === 'netport' &&
+      updates.props?.schX !== undefined &&
+      updates.props?.schY !== undefined
+    ) {
+      const netName = String(updatedComp.props.netName || updatedComp.name || '').trim()
+      if (netName) {
+        const meta = loadEditorMeta(state.fsMap)
+        const nextMeta = setNetAnchor(meta, state.activeFilePath, netName, {
+          schX: updates.props.schX,
+          schY: updates.props.schY
+        })
+        if (NETPORT_DEBUG()) console.log('[netport:saved-to-meta]', { netName, schX: updates.props.schX, schY: updates.props.schY })
+        nextFsMap = saveEditorMeta(state.fsMap, nextMeta)
+        saveFSMapToStorage(nextFsMap)
+      }
+    }
+
     setTimeout(() => get().regenerateTSX(), 0)
-    return { placedComponents: newComponents }
+    return { placedComponents: newComponents, fsMap: nextFsMap }
   }),
 
   rotateSelectedComponents: () => {
@@ -1507,16 +1612,54 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   cancelWiring: () => set({ wiringStart: null }),
 
   removeWire: (wireId) => set((state) => {
+    const orphanedNetports = getOrphanedNetportsAfterRemovingWires(
+      state.placedComponents,
+      state.wires,
+      new Set([wireId])
+    )
+
+    if (orphanedNetports.length > 0) {
+      const label = orphanedNetports.join(', ')
+      const shouldContinue = window.confirm(
+        `Removing this wire disconnects net anchor(s): ${label}. Continue?`
+      )
+      if (!shouldContinue) {
+        return state
+      }
+    }
+
     const newWires = state.wires.filter(w => w.id !== wireId)
     setTimeout(() => get().regenerateTSX(), 0)
     return { wires: newWires }
   }),
 
   disconnectPin: (componentId, pinName) => set((state) => {
-    const newWires = state.wires.filter(w =>
-      !(w.from.componentId === componentId && w.from.pinName === pinName) &&
-      !(w.to.componentId === componentId && w.to.pinName === pinName)
+    const removedWireIds = new Set(
+      state.wires
+        .filter(w =>
+          (w.from.componentId === componentId && w.from.pinName === pinName) ||
+          (w.to.componentId === componentId && w.to.pinName === pinName)
+        )
+        .map(w => w.id)
     )
+
+    const orphanedNetports = getOrphanedNetportsAfterRemovingWires(
+      state.placedComponents,
+      state.wires,
+      removedWireIds
+    )
+
+    if (orphanedNetports.length > 0) {
+      const label = orphanedNetports.join(', ')
+      const shouldContinue = window.confirm(
+        `Disconnecting this pin removes the last wire for net anchor(s): ${label}. Continue?`
+      )
+      if (!shouldContinue) {
+        return state
+      }
+    }
+
+    const newWires = state.wires.filter(w => !removedWireIds.has(w.id))
     setTimeout(() => get().regenerateTSX(), 0)
     return { wires: newWires }
   }),
@@ -1764,12 +1907,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       })
     })
 
+    const portList = [...new Set(chosenPorts.map(port => port.portName))]
     const subPath = `subcircuits/${safeName}.tsx`
     const subContent = generateFileTSX(subPath, subComponents, internalWires)
+    const portsConst = `export const ports = [${portList.map(port => `"${port}"`).join(', ')}] as const\n\n`
+    const subContentWithPorts = subContent.includes('export const ports =')
+      ? subContent
+      : `${portsConst}${subContent}`
 
     let nextFsMap = regenerateSubcircuitIndex({
       ...state.fsMap,
-      [subPath]: subContent
+      [subPath]: subContentWithPorts
     })
 
     const boundaryWires = state.wires.filter(wire => {
@@ -1779,7 +1927,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     })
 
     const instanceName = toUniqueName(safeName, state.placedComponents.map(c => c.name))
-    const portList = [...new Set(chosenPorts.map(port => port.portName))]
     const instanceId = `sub-${Date.now()}`
 
     const instance: PlacedComponent = {
@@ -1962,6 +2109,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   regenerateTSX: () => {
     const state = get()
+    if (NETPORT_DEBUG()) {
+      const netports = state.placedComponents.filter(c => c.catalogId === 'netport')
+      console.log('[netport:regenerate]', state.activeFilePath, netports.map(c => ({ name: c.name, schX: c.props.schX, schY: c.props.schY })))
+    }
     const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
     const nextFsMap = regenerateSubcircuitIndex({
       ...state.fsMap,

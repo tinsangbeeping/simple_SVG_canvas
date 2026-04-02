@@ -387,6 +387,13 @@ export const Canvas: React.FC = () => {
           return
         }
 
+        // netport/netlabel have no catalog entry but are draggable — update position directly
+        if (comp.catalogId === 'netport' || comp.catalogId === 'net' || comp.catalogId === 'netlabel') {
+          if ((window as any).__NETPORT_DEBUG) console.log('[netport:drag]', { name: comp.name, newX, newY })
+          updatePlacedComponent(id, { props: newProps })
+          return
+        }
+
         const catalogItem = getCatalogItem(comp.catalogId)
         if (!catalogItem) return
 
@@ -812,9 +819,12 @@ export const Canvas: React.FC = () => {
                       onClick={(e) => handlePinClick(e, component.id, pin.name)}
                       onDoubleClick={(e) => {
                         e.stopPropagation()
+                        if (component.catalogId === 'netport') return
                         disconnectPin(component.id, pin.name)
                       }}
-                      title={`${component.name}.${pin.name} — double-click to disconnect`}
+                      title={component.catalogId === 'netport'
+                        ? `${component.name}.${pin.name}`
+                        : `${component.name}.${pin.name} — double-click to disconnect`}
                     />
                   )
                 })}
