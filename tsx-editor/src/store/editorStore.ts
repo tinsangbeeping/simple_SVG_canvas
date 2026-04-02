@@ -201,6 +201,7 @@ const extractExplicitSubcircuitPorts = (content: string): string[] | null => {
     return null
   }
 }
+const warnedSubcircuitPortFallback = new Set<string>()
 
 const getSubcircuitPorts = (fsMap: FSMap, name: string): string[] => {
   const filePath = `subcircuits/${name}.tsx`
@@ -211,7 +212,10 @@ const getSubcircuitPorts = (fsMap: FSMap, name: string): string[] => {
     return explicitPorts
   }
 
-  console.warn(`[subcircuit ports] Falling back to net.* scan for ${filePath}; add \`export const ports = [\"...\"] as const\``)
+  if (!warnedSubcircuitPortFallback.has(filePath)) {
+    warnedSubcircuitPortFallback.add(filePath)
+    console.warn(`[subcircuit ports] Falling back to net.* scan for ${filePath}; add \`export const ports = ["..."] as const\``)
+  }
 
   const ports = new Set<string>()
   const netRegex = /net\.([A-Za-z_][A-Za-z0-9_]*)/g
@@ -841,7 +845,7 @@ const buildNetRegistryFromComponents = (components: PlacedComponent[]): NetRegis
   return registry
 }
 
-const toAttrString = (props: Record<string, any>): string => {
+const toAttrList = (props: Record<string, any>): string[] => {
   const attrs: string[] = []
 
   Object.entries(props)
@@ -867,10 +871,10 @@ const toAttrString = (props: Record<string, any>): string => {
         if (value) attrs.push(key)
         return
       }
-      attrs.push(`${key}="${String(value)}"`)
+      attrs.push(`${key}="${String(value).replace(/"/g, '&quot;')}"`)
     })
 
-  return attrs.join(' ')
+  return attrs
 }
 
 const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: boolean): string => {
@@ -910,7 +914,7 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
     }
   }
 
-  const attrs = toAttrString(normalizedProps)
+  const attrs = toAttrList(normalizedProps)
   const name = sanitizeComponentName(String(normalizedProps.name || component.name || ''))
   const x = pixelToSchematic(Number(normalizedProps.schX || 0))
   const y = pixelToSchematic(Number(normalizedProps.schY || 0))
@@ -921,7 +925,7 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
   const propLines: string[] = []
 
   if (name && component.catalogId !== 'netlabel') propLines.push(`name="${name}"`)
-  if (attrs) propLines.push(...attrs.split(' '))
+  if (attrs.length > 0) propLines.push(...attrs)
   const rotation = String(normalizedProps.schRotation || '0deg')
   propLines.push(`schRotation="${rotation}"`)
   const commentX = inSubcircuitFile ? `x + ${coordX}` : coordX

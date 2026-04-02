@@ -72,10 +72,16 @@ export const Canvas: React.FC = () => {
       return { width: 130, height: Math.max(46, 28 + rows * 18) }
     }
     if (component.catalogId === 'customchip') {
-      const count = Math.max(2, Number(component.props.pinCount || 8))
+      const legacyCount = Math.max(2, Number(component.props.pinCount || 8))
+      const leftPins = Math.max(0, Number(component.props.leftPins ?? Math.ceil(legacyCount / 2)))
+      const rightPins = Math.max(0, Number(component.props.rightPins ?? Math.floor(legacyCount / 2)))
+      const topPins = Math.max(0, Number(component.props.topPins ?? 0))
+      const bottomPins = Math.max(0, Number(component.props.bottomPins ?? 0))
+      const sideRows = Math.max(leftPins, rightPins)
+      const topBottomCols = Math.max(topPins, bottomPins)
       return {
-        width: 100,
-        height: Math.max(80, 24 + Math.ceil(count / 2) * 20)
+        width: Math.max(100, 28 + topBottomCols * 20),
+        height: Math.max(80, 24 + sideRows * 20)
       }
     }
     const schematic = getPinConfig(component.catalogId)
@@ -107,30 +113,84 @@ export const Canvas: React.FC = () => {
     }
 
     if (component.catalogId === 'customchip') {
-      const count = Math.max(2, Number(component.props.pinCount || 8))
-      const parsedNames = String(component.props.pinNames || '')
-        .split(',')
-        .map((value: string) => value.trim())
-        .filter(Boolean)
+      const legacyCount = Math.max(2, Number(component.props.pinCount || 8))
+      const leftCount = Math.max(0, Number(component.props.leftPins ?? Math.ceil(legacyCount / 2)))
+      const rightCount = Math.max(0, Number(component.props.rightPins ?? Math.floor(legacyCount / 2)))
+      const topCount = Math.max(0, Number(component.props.topPins ?? 0))
+      const bottomCount = Math.max(0, Number(component.props.bottomPins ?? 0))
 
-      const leftCount = Math.ceil(count / 2)
-      const rightCount = Math.floor(count / 2)
-      const leftSpacing = 20
-      const rightSpacing = 20
+      const bodyWidth = Math.max(100, 28 + Math.max(topCount, bottomCount) * 20)
+      const bodyHeight = Math.max(80, 24 + Math.max(leftCount, rightCount) * 20)
 
-      const leftPins = Array.from({ length: leftCount }).map((_, index) => ({
-        name: parsedNames[index] || `pin${index + 1}`,
-        x: 0,
-        y: 20 + index * leftSpacing
-      }))
+      const namedMap = new Map<string, string>()
+      const rawNames = String(component.props.pinNames || '').trim()
+      if (rawNames.includes('=')) {
+        rawNames
+          .split(',')
+          .map((entry: string) => entry.trim())
+          .filter(Boolean)
+          .forEach((entry: string) => {
+            const [slot, ...rest] = entry.split('=')
+            const slotKey = slot.trim().toUpperCase()
+            const pinLabel = rest.join('=').trim()
+            if (slotKey && pinLabel) {
+              namedMap.set(slotKey, pinLabel)
+            }
+          })
+      }
 
-      const rightPins = Array.from({ length: rightCount }).map((_, index) => ({
-        name: parsedNames[leftCount + index] || `pin${leftCount + index + 1}`,
-        x: 100,
-        y: 20 + index * rightSpacing
-      }))
+      const legacyNames = !rawNames.includes('=')
+        ? rawNames.split(',').map((value: string) => value.trim()).filter(Boolean)
+        : []
+      let legacyCursor = 0
 
-      return [...leftPins, ...rightPins]
+      const getName = (slotKey: string, fallback: string) => {
+        if (namedMap.has(slotKey)) return namedMap.get(slotKey) as string
+        if (legacyCursor < legacyNames.length) {
+          const fromLegacy = legacyNames[legacyCursor]
+          legacyCursor += 1
+          return fromLegacy
+        }
+        return fallback
+      }
+
+      const leftPins = Array.from({ length: leftCount }).map((_, index) => {
+        const slotKey = `L${index + 1}`
+        return {
+          name: getName(slotKey, `L${index + 1}`),
+          x: 0,
+          y: 20 + index * 20
+        }
+      })
+
+      const rightPins = Array.from({ length: rightCount }).map((_, index) => {
+        const slotKey = `R${index + 1}`
+        return {
+          name: getName(slotKey, `R${index + 1}`),
+          x: bodyWidth,
+          y: 20 + index * 20
+        }
+      })
+
+      const topPins = Array.from({ length: topCount }).map((_, index) => {
+        const slotKey = `U${index + 1}`
+        return {
+          name: getName(slotKey, `U${index + 1}`),
+          x: 20 + index * 20,
+          y: 0
+        }
+      })
+
+      const bottomPins = Array.from({ length: bottomCount }).map((_, index) => {
+        const slotKey = `D${index + 1}`
+        return {
+          name: getName(slotKey, `D${index + 1}`),
+          x: 20 + index * 20,
+          y: bodyHeight
+        }
+      })
+
+      return [...leftPins, ...rightPins, ...topPins, ...bottomPins]
     }
 
     const schematic = getPinConfig(component.catalogId)

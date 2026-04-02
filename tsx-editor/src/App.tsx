@@ -92,16 +92,15 @@ function App() {
             activeFilePath={activeFilePath || 'schematics/main.tsx'}
             placedComponents={placedComponents}
             onPropertyChange={(componentId, propName, value) => {
-              if (propName === 'schX' || propName === 'schY') {
-                const component = placedComponents.find(c => c.id === componentId)
-                if (component) {
-                  updatePlacedComponent(componentId, {
-                    props: {
-                      ...component.props,
-                      [propName]: value
-                    }
-                  })
-                }
+              const component = placedComponents.find(c => c.id === componentId)
+              if (component) {
+                updatePlacedComponent(componentId, {
+                  ...(propName === 'name' ? { name: String(value || component.name) } : {}),
+                  props: {
+                    ...component.props,
+                    [propName]: value
+                  }
+                })
               }
             }}
           />

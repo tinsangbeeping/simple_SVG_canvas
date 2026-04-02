@@ -256,21 +256,41 @@ export const CustomChipItem: CatalogItem = {
     label: 'Custom Chip',
     kind: 'part',
     category: 'IC',
-    description: 'Chip with configurable pin count and pin names',
+    description: 'Chip with configurable side pin counts and named pins',
     editablePropsSchema: {
       name: {
         type: 'string',
         label: 'Name',
         default: 'U1'
       },
+      leftPins: {
+        type: 'number',
+        label: 'Left Pins',
+        default: 4
+      },
+      rightPins: {
+        type: 'number',
+        label: 'Right Pins',
+        default: 4
+      },
+      topPins: {
+        type: 'number',
+        label: 'Top Pins',
+        default: 0
+      },
+      bottomPins: {
+        type: 'number',
+        label: 'Bottom Pins',
+        default: 0
+      },
       pinCount: {
         type: 'number',
-        label: 'Pin Count',
+        label: 'Pin Count (legacy)',
         default: 8
       },
       pinNames: {
         type: 'string',
-        label: 'Pin Names (comma-separated)',
+        label: 'Pin Names (L1=VIN,R1=VOUT,...)',
         default: ''
       },
       symbolPreset: {
@@ -292,6 +312,10 @@ export const CustomChipItem: CatalogItem = {
     },
     defaultProps: {
       name: 'U1',
+      leftPins: 4,
+      rightPins: 4,
+      topPins: 0,
+      bottomPins: 0,
       pinCount: 8,
       pinNames: '',
       symbolPreset: 'default',
@@ -300,8 +324,13 @@ export const CustomChipItem: CatalogItem = {
     }
   },
   emitTSX: (props) => {
-    const { name, pinCount, pinNames, symbolPreset, schX, schY } = props
-    return `<chip name="${name}" pinCount={${pinCount}} pinNames="${pinNames || ''}" symbolPreset="${symbolPreset || 'default'}" schX={${schX}} schY={${schY}} />`
+    const { name, leftPins, rightPins, topPins, bottomPins, pinCount, pinNames, symbolPreset, schX, schY } = props
+    const safeLeft = Math.max(0, Number(leftPins ?? Math.ceil(Number(pinCount || 8) / 2)))
+    const safeRight = Math.max(0, Number(rightPins ?? Math.floor(Number(pinCount || 8) / 2)))
+    const safeTop = Math.max(0, Number(topPins ?? 0))
+    const safeBottom = Math.max(0, Number(bottomPins ?? 0))
+    const totalPins = safeLeft + safeRight + safeTop + safeBottom
+    return `<chip name="${name}" leftPins={${safeLeft}} rightPins={${safeRight}} topPins={${safeTop}} bottomPins={${safeBottom}} pinCount={${Math.max(2, totalPins)}} pinNames="${pinNames || ''}" symbolPreset="${symbolPreset || 'default'}" schX={${schX}} schY={${schY}} />`
   }
 }
 
