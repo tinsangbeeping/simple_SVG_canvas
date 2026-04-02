@@ -93,4 +93,8 @@ export interface EditorState {
     y: number
     zoom: number
   }
+  // Workspace model
+  workspaces: Record<string, import('./workspace').WorkspaceData>
+  activeWorkspaceId: string
+  openFilePaths: string[]
 }

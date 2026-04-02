@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { getCatalogItem } from '../catalog'
 import { loadEditorMeta, saveEditorMeta, getNetAnchor, setNetAnchor } from './metaHelpers'
 import * as parser from '@babel/parser'
+import { WorkspaceData, StoredWorkspaceState } from '../types/workspace'
 
 // Round 0 DEBUG — set to true in browser console: window.__NETPORT_DEBUG = true
 const NETPORT_DEBUG = () => !!(window as any).__NETPORT_DEBUG
@@ -21,6 +22,8 @@ interface EditorStore extends EditorState {
     wires: WireConnection[]
   } | null
   pasteCount: number
+  undoStack: { components: PlacedComponent[]; wires: WireConnection[] }[]
+  redoStack: { components: PlacedComponent[]; wires: WireConnection[] }[]
   // Actions
   setFSMap: (fsMap: FSMap) => void
   setActiveFilePath: (filePath: string) => void
@@ -56,6 +59,20 @@ interface EditorStore extends EditorState {
   importTSXIntoActiveFile: (content: string) => void
   setCodeViewTab: (tab: 'source' | 'export') => void
   setExportPreview: (preview: { fileName: string; content: string } | null) => void
+  // Workspace actions
+  createWorkspace: (name: string) => void
+  switchWorkspace: (id: string) => void
+  deleteWorkspace: (id: string) => void
+  renameWorkspace: (id: string, name: string) => void
+  importWorkspaceJSON: (json: string) => void
+  exportWorkspaceJSON: () => string
+  // File tab actions
+  openFileTab: (filePath: string) => void
+  closeFileTab: (filePath: string) => void
+  // Undo/redo
+  undo: () => void
+  redo: () => void
+  pushUndoSnapshot: () => void
 }
 
 const DEFAULT_MAIN_TSX = `export default () => (
@@ -136,29 +153,80 @@ const ensureFsMapDefaults = (rawMap: FSMap): FSMap => {
   return fsMap
 }
 
-const saveFSMapToStorage = (fsMap: FSMap) => {
-  if (typeof localStorage === 'undefined') return
-  try {
-    localStorage.setItem('editor_fsMap', JSON.stringify(fsMap))
-  } catch (e) {
-    console.warn('Failed to save fsMap from localStorage:', e)
+const WORKSPACE_STORAGE_KEY = 'editor_workspaces'
+
+const createDefaultWorkspace = (fsMap?: FSMap): WorkspaceData => {
+  const map = fsMap || ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX })
+  return {
+    id: 'project-current',
+    name: 'My Project',
+    fsMap: map,
+    openFilePaths: ['main.tsx'],
+    activeFilePath: 'main.tsx'
   }
 }
 
-const loadFSMapFromStorage = (): FSMap => {
+const saveWorkspacesToStorage = (workspaces: Record<string, WorkspaceData>, activeWorkspaceId: string) => {
+  if (typeof localStorage === 'undefined') return
+  try {
+    const stored: StoredWorkspaceState = { workspaces, activeWorkspaceId }
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(stored))
+  } catch (e) {
+    console.warn('Failed to save workspaces to localStorage:', e)
+  }
+}
+
+// Keep the old key name for backwards compat in regenerateTSX callers that still call this
+const saveFSMapToStorage = (fsMap: FSMap) => {
+  // no-op: actual persistence goes through saveWorkspacesToStorage
+  // kept to avoid breaking internal callers before they are migrated
+}
+
+const loadWorkspacesFromStorage = (): StoredWorkspaceState => {
   if (typeof localStorage === 'undefined') {
-    return ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX })
+    const ws = createDefaultWorkspace()
+    return { workspaces: { [ws.id]: ws }, activeWorkspaceId: ws.id }
   }
 
   try {
-    const stored = localStorage.getItem('editor_fsMap')
-    if (stored) {
-      return ensureFsMapDefaults(JSON.parse(stored))
+    const newStored = localStorage.getItem(WORKSPACE_STORAGE_KEY)
+    if (newStored) {
+      const parsed: StoredWorkspaceState = JSON.parse(newStored)
+      // Ensure each workspace has the required defaults
+      for (const id of Object.keys(parsed.workspaces)) {
+        parsed.workspaces[id].fsMap = ensureFsMapDefaults(parsed.workspaces[id].fsMap || {})
+        if (!parsed.workspaces[id].openFilePaths) {
+          parsed.workspaces[id].openFilePaths = ['main.tsx']
+        }
+        if (!parsed.workspaces[id].activeFilePath) {
+          parsed.workspaces[id].activeFilePath = 'main.tsx'
+        }
+      }
+      return parsed
     }
   } catch (e) {
-    console.warn('Failed to load fsMap from localStorage:', e)
+    console.warn('Failed to load workspaces from localStorage:', e)
   }
-  return ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX })
+
+  // Try migrating from legacy 'editor_fsMap' key
+  try {
+    const legacyStored = localStorage.getItem('editor_fsMap')
+    if (legacyStored) {
+      const legacyFsMap = ensureFsMapDefaults(JSON.parse(legacyStored))
+      const ws = createDefaultWorkspace(legacyFsMap)
+      return { workspaces: { [ws.id]: ws }, activeWorkspaceId: ws.id }
+    }
+  } catch (e) {
+    console.warn('Failed to migrate legacy fsMap:', e)
+  }
+
+  const ws = createDefaultWorkspace()
+  return { workspaces: { [ws.id]: ws }, activeWorkspaceId: ws.id }
+}
+
+const loadFSMapFromStorage = (): FSMap => {
+  const { workspaces, activeWorkspaceId } = loadWorkspacesFromStorage()
+  return workspaces[activeWorkspaceId]?.fsMap || ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX })
 }
 
 const extractExplicitSubcircuitPorts = (content: string): string[] | null => {
@@ -1254,13 +1322,16 @@ const generateFlatMainTSX = (fsMap: FSMap): string => {
   return `export default () => (\n  <board width="50mm" height="50mm">\n${content}\n  </board>\n)\n`
 }
 
-const initialFsMap = loadFSMapFromStorage()
-const initialCanvas = parseFileToCanvas('main.tsx', initialFsMap)
+const initialWorkspaceState = loadWorkspacesFromStorage()
+const initialActiveWsId = initialWorkspaceState.activeWorkspaceId
+const initialWorkspace = initialWorkspaceState.workspaces[initialActiveWsId] || createDefaultWorkspace()
+const initialFsMap = initialWorkspace.fsMap
+const initialCanvas = parseFileToCanvas(initialWorkspace.activeFilePath || 'main.tsx', initialFsMap)
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
   // Initial state - load from localStorage
   fsMap: initialFsMap,
-  activeFilePath: 'main.tsx',
+  activeFilePath: initialWorkspace.activeFilePath || 'main.tsx',
   breadcrumbStack: [],
   selectedComponentIds: [],
   codeViewTab: 'source',
@@ -1282,12 +1353,24 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     y: 0,
     zoom: 1
   },
+  // Workspace model
+  workspaces: initialWorkspaceState.workspaces,
+  activeWorkspaceId: initialActiveWsId,
+  openFilePaths: initialWorkspace.openFilePaths || ['main.tsx'],
+  // Undo/redo stacks
+  undoStack: [],
+  redoStack: [],
 
   // Actions
   setFSMap: (fsMap) => {
     const next = regenerateSubcircuitIndex(ensureFsMapDefaults(fsMap))
-    saveFSMapToStorage(next)
-    set({ fsMap: next })
+    const state = get()
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: { ...state.workspaces[state.activeWorkspaceId], fsMap: next }
+    }
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+    set({ fsMap: next, workspaces: nextWorkspaces })
   },
 
   setActiveFilePath: (filePath) => {
@@ -1308,6 +1391,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set({
       fsMap,
       activeFilePath: filePath,
+      placedComponents: parsed.components,
+      wires: parsed.wires,
+      selectedComponentIds: [],
+      wiringStart: null,
+      cursorNearPin: null
+    })
+    // Open this file as a tab if not already open
+    const openFilePaths = state.openFilePaths.includes(filePath)
+      ? state.openFilePaths
+      : [...state.openFilePaths, filePath]
+    set({
+      fsMap,
+      activeFilePath: filePath,
+      openFilePaths,
       placedComponents: parsed.components,
       wires: parsed.wires,
       selectedComponentIds: [],
@@ -1371,8 +1468,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       ...state.fsMap,
       [filePath]: content
     })
-    saveFSMapToStorage(newFsMap)
-    return { fsMap: newFsMap }
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: { ...state.workspaces[state.activeWorkspaceId], fsMap: newFsMap }
+    }
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+    return { fsMap: newFsMap, workspaces: nextWorkspaces }
   }),
 
   addPlacedComponent: (component) => set((state) => {
@@ -2123,13 +2224,224 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       [state.activeFilePath]: currentContent
     })
 
-    saveFSMapToStorage(nextFsMap)
-    set({ fsMap: nextFsMap })
+    // Sync to active workspace and persist
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap: nextFsMap,
+        activeFilePath: state.activeFilePath,
+        openFilePaths: state.openFilePaths
+      }
+    }
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+    set({ fsMap: nextFsMap, workspaces: nextWorkspaces })
   },
 
   setCodeViewTab: (tab) => set({ codeViewTab: tab }),
 
-  setExportPreview: (preview) => set({ exportPreview: preview })
+  setExportPreview: (preview) => set({ exportPreview: preview }),
+  
+  // ── Undo / Redo ──────────────────────────────────────────────────────────
+  pushUndoSnapshot: () => {
+    const state = get()
+    const snapshot = {
+      components: state.placedComponents.map(c => ({ ...c, props: { ...c.props } })),
+      wires: state.wires.map(w => ({ ...w, from: { ...w.from }, to: { ...w.to } }))
+    }
+    const undoStack = [...state.undoStack, snapshot].slice(-50)
+    set({ undoStack, redoStack: [] })
+  },
+  
+  undo: () => {
+    const state = get()
+    if (state.undoStack.length === 0) return
+    const snapshot = state.undoStack[state.undoStack.length - 1]
+    const redoSnapshot = {
+      components: state.placedComponents.map(c => ({ ...c, props: { ...c.props } })),
+      wires: state.wires.map(w => ({ ...w, from: { ...w.from }, to: { ...w.to } }))
+    }
+    set({
+      undoStack: state.undoStack.slice(0, -1),
+      redoStack: [...state.redoStack, redoSnapshot],
+      placedComponents: snapshot.components,
+      wires: snapshot.wires,
+      selectedComponentIds: []
+    })
+    setTimeout(() => get().regenerateTSX(), 0)
+  },
+  
+  redo: () => {
+    const state = get()
+    if (state.redoStack.length === 0) return
+    const snapshot = state.redoStack[state.redoStack.length - 1]
+    const undoSnapshot = {
+      components: state.placedComponents.map(c => ({ ...c, props: { ...c.props } })),
+      wires: state.wires.map(w => ({ ...w, from: { ...w.from }, to: { ...w.to } }))
+    }
+    set({
+      redoStack: state.redoStack.slice(0, -1),
+      undoStack: [...state.undoStack, undoSnapshot],
+      placedComponents: snapshot.components,
+      wires: snapshot.wires,
+      selectedComponentIds: []
+    })
+    setTimeout(() => get().regenerateTSX(), 0)
+  },
+  
+  // ── File Tabs ─────────────────────────────────────────────────────────────
+  openFileTab: (filePath) => {
+    const state = get()
+    if (state.openFilePaths.includes(filePath)) return
+    set({ openFilePaths: [...state.openFilePaths, filePath] })
+  },
+  
+  closeFileTab: (filePath) => {
+    const state = get()
+    const next = state.openFilePaths.filter(p => p !== filePath)
+    if (next.length === 0) return // keep at least one tab
+    const newActive = state.activeFilePath === filePath
+      ? next[Math.max(0, state.openFilePaths.indexOf(filePath) - 1)]
+      : state.activeFilePath
+    if (newActive !== state.activeFilePath) {
+      get().setActiveFilePath(newActive)
+    }
+    set({ openFilePaths: next })
+  },
+  
+  // ── Workspaces ────────────────────────────────────────────────────────────
+  createWorkspace: (name) => {
+    const state = get()
+    // Save current workspace state first
+    get().regenerateTSX()
+    const id = `ws-${Date.now()}`
+    const newWs: WorkspaceData = {
+      id,
+      name,
+      fsMap: ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX }),
+      openFilePaths: ['main.tsx'],
+      activeFilePath: 'main.tsx'
+    }
+    const nextWorkspaces = { ...state.workspaces, [id]: newWs }
+    // Switch to the new workspace
+    const parsed = parseFileToCanvas('main.tsx', newWs.fsMap)
+    saveWorkspacesToStorage(nextWorkspaces, id)
+    set({
+      workspaces: nextWorkspaces,
+      activeWorkspaceId: id,
+      fsMap: newWs.fsMap,
+      activeFilePath: 'main.tsx',
+      openFilePaths: ['main.tsx'],
+      placedComponents: parsed.components,
+      wires: parsed.wires,
+      selectedComponentIds: [],
+      breadcrumbStack: [],
+      undoStack: [],
+      redoStack: []
+    })
+  },
+  
+  switchWorkspace: (id) => {
+    const state = get()
+    if (id === state.activeWorkspaceId) return
+    const target = state.workspaces[id]
+    if (!target) return
+  
+    // Persist current workspace state before switching
+    const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
+    const currentFsMap = regenerateSubcircuitIndex({ ...state.fsMap, [state.activeFilePath]: currentContent })
+    const updatedWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap: currentFsMap,
+        activeFilePath: state.activeFilePath,
+        openFilePaths: state.openFilePaths
+      },
+    }
+  
+    const targetFilePath = target.activeFilePath || 'main.tsx'
+    const parsed = parseFileToCanvas(targetFilePath, target.fsMap)
+    const nextWorkspaces = { ...updatedWorkspaces, [id]: target }
+    saveWorkspacesToStorage(nextWorkspaces, id)
+    set({
+      workspaces: nextWorkspaces,
+      activeWorkspaceId: id,
+      fsMap: target.fsMap,
+      activeFilePath: targetFilePath,
+      openFilePaths: target.openFilePaths || ['main.tsx'],
+      placedComponents: parsed.components,
+      wires: parsed.wires,
+      selectedComponentIds: [],
+      breadcrumbStack: [],
+      undoStack: [],
+      redoStack: []
+    })
+  },
+  
+  deleteWorkspace: (id) => {
+    const state = get()
+    if (Object.keys(state.workspaces).length <= 1) return // keep at least one
+    const next = { ...state.workspaces }
+    delete next[id]
+    const newActiveId = id === state.activeWorkspaceId
+      ? Object.keys(next)[0]
+      : state.activeWorkspaceId
+  
+    if (id === state.activeWorkspaceId) {
+      get().switchWorkspace(newActiveId)
+    } else {
+      saveWorkspacesToStorage(next, state.activeWorkspaceId)
+      set({ workspaces: next })
+    }
+  },
+  
+  renameWorkspace: (id, name) => {
+    const state = get()
+    if (!state.workspaces[id]) return
+    const next = {
+      ...state.workspaces,
+      [id]: { ...state.workspaces[id], name }
+    }
+    saveWorkspacesToStorage(next, state.activeWorkspaceId)
+    set({ workspaces: next })
+  },
+  
+  importWorkspaceJSON: (json) => {
+    try {
+      const parsed = JSON.parse(json) as Partial<WorkspaceData>
+      const id = `ws-import-${Date.now()}`
+      const name = parsed.name || `Imported ${new Date().toLocaleDateString()}`
+      const fsMap = ensureFsMapDefaults(parsed.fsMap || {})
+      const newWs: WorkspaceData = {
+        id,
+        name,
+        fsMap,
+        openFilePaths: parsed.openFilePaths || ['main.tsx'],
+        activeFilePath: parsed.activeFilePath || 'main.tsx'
+      }
+      const state = get()
+      const nextWorkspaces = { ...state.workspaces, [id]: newWs }
+      saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+      set({ workspaces: nextWorkspaces })
+    } catch (e) {
+      console.error('Failed to import workspace JSON:', e)
+    }
+  },
+  
+  exportWorkspaceJSON: () => {
+    const state = get()
+    // First sync fsMap
+    const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
+    const currentFsMap = regenerateSubcircuitIndex({ ...state.fsMap, [state.activeFilePath]: currentContent })
+    const wsData: WorkspaceData = {
+      ...state.workspaces[state.activeWorkspaceId],
+      fsMap: currentFsMap,
+      activeFilePath: state.activeFilePath,
+      openFilePaths: state.openFilePaths
+    }
+    return JSON.stringify(wsData, null, 2)
+  }
 }))
 
 export const minimalImportExportTestUtils = {
