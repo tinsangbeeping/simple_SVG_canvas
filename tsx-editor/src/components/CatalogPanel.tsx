@@ -71,7 +71,7 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
   }
 
   const panelContent = (
-    <>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       {/* Search bar */}
       <div style={{ padding: '8px 12px', borderBottom: '1px solid #3e3e3e' }}>
         <input
@@ -118,7 +118,7 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
         </button>
       </div>
       
-      <div className="catalog-items">
+      <div className="catalog-items" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
         <div style={{ padding: '6px 4px 10px', color: '#888', fontSize: 11, fontWeight: 600 }}>
           Quick Add
         </div>
@@ -201,11 +201,11 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
           </>
         )}
       </div>
-    </>
+    </div>
   )
 
   if (embedded) {
-    return <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>{panelContent}</div>
+    return <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflow: 'hidden' }}>{panelContent}</div>
   }
 
   return (

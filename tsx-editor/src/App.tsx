@@ -81,7 +81,7 @@ function App() {
 
       <div style={{ display: 'flex', flex: 1, marginTop: 74, overflow: 'hidden' }}>
         {/* ── Left Panel ── */}
-        <div style={{ width: 250, background: '#252526', borderRight: '1px solid #3e3e3e', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ width: 250, background: '#252526', borderRight: '1px solid #3e3e3e', display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
           {/* Tab bar */}
           <div style={{ display: 'flex', background: '#2d2d2d', borderBottom: '1px solid #3e3e3e', flexShrink: 0 }}>
             {TAB_LABELS.map(t => (
@@ -98,7 +98,7 @@ function App() {
           </div>
 
           {/* Tab content */}
-          <div style={{ flex: 1, overflowY: 'auto' }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
 
             {/* WORKSPACES */}
             {leftPanelTab === 'workspaces' && (
