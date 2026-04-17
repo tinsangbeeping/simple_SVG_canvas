@@ -13,7 +13,8 @@ import {
 import {
   buildDependencyGraph,
   buildImportedProjectState,
-  buildSubcircuitRegistry
+  buildSubcircuitRegistry,
+  validateImports
 } from '../utils/projectManager'
 import {
   createDefaultWorkspaceFsMap,
@@ -71,6 +72,7 @@ interface EditorStore extends EditorState {
   setCursorNearPin: (info: { componentId: string; pinName: string } | null) => void
   createSubcircuit: (name: string, componentIds: string[], exposedPorts: ExposedPortSelection[]) => void
   applyLayout: () => Promise<void>
+  autoWireCommonNets: () => void
   regenerateTSX: () => void
   generateFlatCircuitTSX: () => string
   generateProjectStructure: () => { parent: string; children: Record<string, string> }
@@ -1293,6 +1295,49 @@ const getComponentTagName = (component: PlacedComponent): string => {
 const sanitizeComponentName = (name: string): string => name.trim().replace(/^\.+/, '')
 
 const canonicalizeNetName = (value: string): string => value.trim().toUpperCase()
+
+const inferCommonNetForPin = (label: string): string | null => {
+  const normalized = label.trim().toLowerCase()
+  if (!normalized) return null
+
+  if (/^(gnd|ground|vss|0v|agnd|dgnd)$/i.test(normalized)) return 'GND'
+  if (/^(vcc|vdd|vin|vbatt|vbat|3v3|5v|power)$/i.test(normalized)) return 'VCC'
+  return null
+}
+
+const getAutoWireTargets = (component: PlacedComponent): Array<{ pinName: string; netName: string }> => {
+  if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel') {
+    return []
+  }
+
+  const inferred = new Map<string, string>()
+  const pinLabels = component.props?.pinLabels
+
+  if (pinLabels && typeof pinLabels === 'object') {
+    Object.entries(pinLabels as Record<string, unknown>).forEach(([pinName, value]) => {
+      const netName = inferCommonNetForPin(String(value || pinName))
+      if (netName) inferred.set(pinName, netName)
+    })
+  }
+
+  if (component.catalogId === 'subcircuit-instance' && Array.isArray(component.props?.ports)) {
+    ;(component.props.ports as unknown[]).forEach((port) => {
+      const pinName = String(port)
+      const netName = inferCommonNetForPin(pinName)
+      if (netName) inferred.set(pinName, netName)
+    })
+  }
+
+  const fallbackPins = getPinConfig(component.catalogId)?.pins || []
+  fallbackPins.forEach((pin) => {
+    const netName = inferCommonNetForPin(pin.name)
+    if (netName && !inferred.has(pin.name)) {
+      inferred.set(pin.name, netName)
+    }
+  })
+
+  return Array.from(inferred.entries()).map(([pinName, netName]) => ({ pinName, netName }))
+}
 
 const buildNetRegistryFromComponents = (components: PlacedComponent[]): NetRegistry => {
   const registry = new NetRegistry()
@@ -2950,6 +2995,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     })
 
     const nextFsMap = regenerateSubcircuitIndex(ensureFsMapDefaults(nextFsMapSeed))
+    validateImports(nextFsMap)
     const importedProject = buildImportedProjectState(nextFsMap)
     const preferredActivePath =
       [...importedSchematicPaths].reverse().find(path => importedProject.entryFiles.includes(path))
@@ -2989,17 +3035,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     try {
       const { layoutCircuit } = await import('../utils/elkLayout')
-      
-      // Build edges from wires
+
       const edges = state.wires.map(w => ({
         from: { componentId: w.from.componentId },
         to: { componentId: w.to.componentId }
       }))
 
-      // Compute layout using ELK
       const positionMap = await layoutCircuit(layoutTargets, edges)
 
-      // Update all component positions
       const newComponents = state.placedComponents.map(comp => {
         const newPos = positionMap.get(comp.id)
         if (newPos) {
@@ -3015,13 +3058,89 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         return comp
       })
 
-      set({ placedComponents: newComponents })
-      
-      // Regenerate TSX with new positions
-      setTimeout(() => get().regenerateTSX(), 0)
+      const persisted = buildPersistedCanvasState(state, { placedComponents: newComponents })
+      saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+      set({
+        ...persisted,
+        selectedComponentIds: state.selectedComponentIds,
+        exportPreview: null,
+        codeViewTab: 'source'
+      })
     } catch (error) {
       console.error('Layout failed:', error)
     }
+  },
+
+  autoWireCommonNets: () => {
+    const state = get()
+    let nextComponents = [...state.placedComponents]
+    let nextWires = [...state.wires]
+    let created = 0
+
+    const ensureNetPort = (netName: string, x: number, y: number) => {
+      const canonical = canonicalizeNetName(netName)
+      const existing = nextComponents.find(component =>
+        (component.catalogId === 'netport' || component.catalogId === 'net') &&
+        canonicalizeNetName(String(component.props.netName || component.props.name || component.name || '')) === canonical
+      )
+
+      if (existing) return existing
+
+      const netport: PlacedComponent = {
+        id: `netport-auto-${canonical}-${Date.now()}-${nextComponents.length}`,
+        catalogId: 'netport',
+        name: canonical,
+        props: {
+          name: canonical,
+          netName: canonical,
+          schX: x,
+          schY: y,
+          schRotation: '0deg'
+        },
+        tsxSnippet: ''
+      }
+
+      nextComponents.push(netport)
+      return netport
+    }
+
+    state.placedComponents.forEach((component) => {
+      getAutoWireTargets(component).forEach(({ pinName, netName }) => {
+        const pinAlreadyConnected = nextWires.some(wire =>
+          (wire.from.componentId === component.id && wire.from.pinName === pinName) ||
+          (wire.to.componentId === component.id && wire.to.pinName === pinName)
+        )
+
+        if (pinAlreadyConnected) return
+
+        const offsetX = netName === 'GND' ? -140 : 140
+        const netPort = ensureNetPort(
+          netName,
+          Number(component.props.schX || 0) + offsetX,
+          Number(component.props.schY || 0)
+        )
+
+        nextWires.push({
+          id: `wire-auto-${Date.now()}-${created}`,
+          from: { componentId: component.id, pinName },
+          to: { componentId: netPort.id, pinName: 'port' }
+        })
+        created += 1
+      })
+    })
+
+    if (created === 0) return
+
+    const persisted = buildPersistedCanvasState(state, {
+      placedComponents: nextComponents,
+      wires: nextWires
+    })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+    set({
+      ...persisted,
+      exportPreview: null,
+      codeViewTab: 'source'
+    })
   },
 
   regenerateTSX: () => {

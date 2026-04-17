@@ -10,6 +10,7 @@
  * - strict workspace equality after re-import
  */
 
+import JSZip from 'jszip'
 import {
   createDefaultWorkspaceFsMap,
   exportWorkspaceJson,
@@ -26,7 +27,9 @@ import {
   buildImportedProjectState,
   buildSubcircuitRegistry,
   extractAllSubcircuits,
-  extractAllSymbols
+  extractAllSymbols,
+  extractBatchFilesFromZip,
+  validateImports
 } from '../src/utils/projectManager'
 import { classifyFilePath } from '../src/utils/fileClassification'
 
@@ -72,7 +75,7 @@ function workspacesEqual(a: WorkspaceState, b: WorkspaceState): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
-function run(): void {
+async function run(): Promise<void> {
   console.log('\n🔍 validate-workspace.ts (Step 2 + Step 3A)\n')
 
   // 1) Create a test workspace
@@ -277,8 +280,23 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   assert(normalizedAdvancedImport.includes('pinAttributes={{'), 'advanced IC schematic should preserve explicit pinAttributes')
   assert(!normalizedAdvancedImport.includes('symbolPreset="npn-bce-template"'), 'wrong transistor preset should not appear')
   assert(!normalizedAdvancedImport.includes('footprint="soic8"'), 'mismatched SOIC-8 footprint should not appear')
-// ...existing code...
 
+  const zip = new JSZip()
+  zip.file('subcircuits/ZipBlock.tsx', `export const ports = ["IN", "OUT"] as const\n\nexport function ZipBlock(props: { name: string }) {\n  return <subcircuit name={props.name}></subcircuit>\n}`)
+  zip.file('schematics/ZipMain.tsx', `import { ZipBlock } from "../subcircuits/ZipBlock"\n\nexport default () => <board><ZipBlock name="X1" /></board>`)
+  const extractedZipFiles = await extractBatchFilesFromZip(await zip.generateAsync({ type: 'uint8array' }))
+  assert(extractedZipFiles.length === 2, 'zip import should extract importable project files')
+  assert(extractedZipFiles.some(file => file.fileName.endsWith('ZipBlock.tsx')), 'zip import should preserve relative project paths')
+
+  const brokenFsMap = createDefaultWorkspaceFsMap('Broken Import WS')
+  brokenFsMap['schematics/Broken.tsx'] = `import { MissingBlock } from "../subcircuits/MissingBlock"\n\nexport default () => <board><MissingBlock name="X1" /></board>`
+  let didRejectBrokenImport = false
+  try {
+    validateImports(brokenFsMap)
+  } catch {
+    didRejectBrokenImport = true
+  }
+  assert(didRejectBrokenImport, 'validateImports should reject missing relative imports')
 
   // 4) Export workspace JSON
   const exported: WorkspaceExport = exportWorkspaceJson(originalWorkspace.name, originalWorkspace.fsMap)
@@ -610,11 +628,9 @@ export function Debounce_led(props: { name: string }) {
   console.log('✅ PASS validate-workspace')
 }
 
-try {
-  run()
-} catch (error) {
+run().catch((error) => {
   const failure = error instanceof Error ? error : new Error(String(error))
   console.error('❌ FAIL validate-workspace')
   console.error(failure.message)
   throw failure
-}
+})

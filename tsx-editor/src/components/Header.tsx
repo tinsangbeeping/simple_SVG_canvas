@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import { pixelToSchematic } from '../utils/coordinateScale'
-import { buildSubcircuitRegistry } from '../utils/projectManager'
+import { buildSubcircuitRegistry, extractBatchFilesFromZip } from '../utils/projectManager'
 import { getApplicablePatches } from '../lib/patches'
 
 const MAIN_SCHEMATIC_PATH = 'schematics/main.tsx'
@@ -11,6 +11,7 @@ export const Header: React.FC = () => {
     fsMap,
     placedComponents,
     applyLayout,
+    autoWireCommonNets,
     selectedComponentIds,
     rotateSelectedComponents,
     removeSelectedComponents,
@@ -50,6 +51,8 @@ export const Header: React.FC = () => {
   const [exportName, setExportName] = useState('MyComponent')
   const [selectedPatchId, setSelectedPatchId] = useState('')
   const [isLayouting, setIsLayouting] = useState(false)
+  const [isZipImporting, setIsZipImporting] = useState(false)
+  const zipInputRef = useRef<HTMLInputElement | null>(null)
 
   const subcircuitRegistry = useMemo(() => buildSubcircuitRegistry(fsMap), [fsMap])
   const applicablePatches = useMemo(() => getApplicablePatches(subcircuitRegistry), [subcircuitRegistry])
@@ -176,16 +179,36 @@ export const Header: React.FC = () => {
     throw new Error('Batch import expects a JSON array or an object map of file paths to content.')
   }
 
+  const importBatchFiles = (files: Array<{ fileName: string; content: string }>) => {
+    importFilesBatch(files)
+    setShowBatchImportDialog(false)
+    setBatchImportContent('')
+    alert(`Imported ${files.length} files and rebuilt the reusable block registry.`)
+  }
+
   const handleBatchImport = () => {
     if (!batchImportContent.trim()) return
     try {
       const files = parseBatchPayload(batchImportContent)
-      importFilesBatch(files)
-      setShowBatchImportDialog(false)
-      setBatchImportContent('')
-      alert(`Imported ${files.length} files and rebuilt the reusable block registry.`)
+      importBatchFiles(files)
     } catch (error) {
       alert('Batch import failed: ' + (error as Error).message)
+    }
+  }
+
+  const handleZipImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    setIsZipImporting(true)
+    try {
+      const files = await extractBatchFilesFromZip(await file.arrayBuffer())
+      importBatchFiles(files)
+    } catch (error) {
+      alert('Zip import failed: ' + (error as Error).message)
+    } finally {
+      setIsZipImporting(false)
+      event.target.value = ''
     }
   }
 
@@ -290,6 +313,15 @@ export const Header: React.FC = () => {
     }
   }
 
+  const handleAutoWire = () => {
+    try {
+      autoWireCommonNets()
+      alert('Connected any detected VCC and GND pins to shared net ports.')
+    } catch (error) {
+      alert('Auto wire failed: ' + (error as Error).message)
+    }
+  }
+
   const handleExportZip = () => {
     try {
       const structure = generateProjectStructure()
@@ -319,11 +351,17 @@ export const Header: React.FC = () => {
           <button className="btn btn-secondary" onClick={handleAutoLayout} disabled={isLayouting || placedComponents.length === 0}>
             {isLayouting ? 'Layouting...' : 'Auto Layout'}
           </button>
+          <button className="btn btn-secondary" onClick={handleAutoWire} disabled={placedComponents.length === 0}>
+            Auto Wire
+          </button>
           <button className="btn btn-secondary" onClick={handleExportZip} disabled={placedComponents.length === 0}>
             Export Structure
           </button>
           <button className="btn btn-secondary" onClick={() => setShowImportDialog(true)}>Import TSX</button>
           <button className="btn btn-secondary" onClick={() => setShowBatchImportDialog(true)}>Import Batch</button>
+          <button className="btn btn-secondary" onClick={() => zipInputRef.current?.click()} disabled={isZipImporting}>
+            {isZipImporting ? 'Importing Zip...' : 'Import Zip'}
+          </button>
           <button className="btn btn-secondary" onClick={() => setShowPatchDialog(true)}>Apply Patch</button>
           <button className="btn btn-secondary" onClick={handleCopy}>Copy TSX</button>
           <button className="btn btn-secondary" onClick={handleExport}>Export Circuit</button>
@@ -332,6 +370,14 @@ export const Header: React.FC = () => {
           <button className="btn btn-primary" onClick={() => setShowExportDialog(true)}>Export as Component</button>
         </div>
       </div>
+
+      <input
+        ref={zipInputRef}
+        type="file"
+        accept=".zip"
+        onChange={handleZipImport}
+        style={{ display: 'none' }}
+      />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, fontSize: 12, color: '#aaa' }}>
         <button className="btn btn-secondary" disabled={breadcrumbStack.length === 0} onClick={goBackFile} style={{ padding: '2px 8px', fontSize: 11 }}>
@@ -384,7 +430,7 @@ export const Header: React.FC = () => {
           <div style={{ background: '#2d2d2d', padding: 30, borderRadius: 8, minWidth: 640, maxWidth: 860, border: '1px solid #3e3e3e' }}>
             <h2 style={{ marginBottom: 20, fontSize: 18 }}>Batch Import Files</h2>
             <div style={{ marginBottom: 12, fontSize: 12, color: '#aaa' }}>
-              Paste a JSON array of file objects or a path-to-content object map. Imported subcircuits are registered automatically for patches.
+              Paste a JSON array of file objects or a path-to-content object map. Imported subcircuits are registered automatically for patches, and broken relative imports are rejected.
             </div>
             <textarea
               value={batchImportContent}

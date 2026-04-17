@@ -1,3 +1,4 @@
+import JSZip from 'jszip'
 import { FSMap } from '../types/catalog'
 import {
   ComponentUsageMap,
@@ -222,6 +223,59 @@ export const buildDependencyGraph = (fsMap: FSMap): DependencyGraph => {
   })
 
   return graph
+}
+
+export const getBrokenImports = (fsMap: FSMap): Array<{ filePath: string; importPath: string }> => {
+  const broken: Array<{ filePath: string; importPath: string }> = []
+
+  Object.entries(fsMap).forEach(([path, content]) => {
+    extractImportPaths(content).forEach((importPath) => {
+      if (!importPath.startsWith('.')) return
+      const resolved = resolveImportPath(path, importPath, fsMap)
+      if (!resolved) {
+        broken.push({ filePath: path, importPath })
+      }
+    })
+  })
+
+  return broken
+}
+
+export const validateImports = (fsMap: FSMap): void => {
+  const broken = getBrokenImports(fsMap)
+  if (broken.length === 0) return
+
+  const details = broken
+    .map(entry => `${entry.filePath} -> ${entry.importPath}`)
+    .join(', ')
+
+  throw new Error(`Broken imports detected: ${details}`)
+}
+
+export const extractBatchFilesFromZip = async (
+  input: Blob | ArrayBuffer | Uint8Array
+): Promise<Array<{ fileName: string; content: string }>> => {
+  const zip = await JSZip.loadAsync(input)
+  const files: Array<{ fileName: string; content: string }> = []
+
+  for (const entry of Object.values(zip.files)) {
+    if (entry.dir) continue
+    if (!/\.(tsx|ts|json)$/i.test(entry.name)) continue
+
+    const content = await entry.async('string')
+    if (!content.trim()) continue
+
+    files.push({
+      fileName: entry.name,
+      content
+    })
+  }
+
+  if (files.length === 0) {
+    throw new Error('No importable TSX, TS, or JSON files were found in the zip archive.')
+  }
+
+  return files
 }
 
 export const buildComponentUsage = (fsMap: FSMap): ComponentUsageMap => {
