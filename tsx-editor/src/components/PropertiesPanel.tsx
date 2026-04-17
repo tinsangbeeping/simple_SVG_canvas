@@ -82,9 +82,9 @@ export const PropertiesPanel: React.FC = () => {
 
           {subcircuitCreation.active && creationStep === 'select' && (
             <div style={{ marginTop: 15, padding: 10, background: '#2d2d2d', borderRadius: 4 }}>
-              <div className="property-label" style={{ marginBottom: 8 }}>Step 1: Select boundary pins on canvas</div>
+              <div className="property-label" style={{ marginBottom: 8 }}>Step 1: Select public pins on canvas</div>
               <div style={{ fontSize: 12, color: '#aaa', marginBottom: 8 }}>
-                Click yellow pins to select/unselect. Selected pins turn orange. If there are no boundary wires, all pins on selected components become selectable.
+                Any real component pin can be exposed as a public port. Boundary-connected pins are shown first, but all selectable ports remain available.
               </div>
               <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
                 Candidate pins: {subcircuitCreation.candidatePins.length} • Selected: {subcircuitCreation.selectedPins.length}
@@ -107,7 +107,12 @@ export const PropertiesPanel: React.FC = () => {
                   onClick={() => {
                     const defaults: Record<string, string> = {}
                     subcircuitCreation.selectedPins.forEach(pin => {
-                      defaults[`${pin.componentId}:${pin.pinName}`] = pin.pinName.toUpperCase()
+                      const component = placedComponents.find(c => c.id === pin.componentId)
+                      const defaultName = (pin.pinName === 'port'
+                        ? String(component?.props?.netName || component?.name || pin.pinName)
+                        : pin.pinName
+                      ).replace(/[^A-Za-z0-9_]/g, '_')
+                      defaults[`${pin.componentId}:${pin.pinName}`] = defaultName.toUpperCase()
                     })
                     setSelectedPortNames(defaults)
                     setCreationStep('name')
@@ -223,33 +228,43 @@ export const PropertiesPanel: React.FC = () => {
 
   const catalogItem = getCatalogItem(selectedComponent.catalogId)
   const isSubcircuitInstance = selectedComponent.catalogId === 'subcircuit-instance'
-  if (!catalogItem && !isSubcircuitInstance) return null
+  const isSheetInstance = selectedComponent.catalogId === 'sheet-instance'
+  if (!catalogItem && !isSubcircuitInstance && !isSheetInstance) return null
 
   const handleDelete = () => {
     removePlacedComponent(selectedComponent.id)
   }
 
-  if (isSubcircuitInstance) {
+  if (isSubcircuitInstance || isSheetInstance) {
     const subcircuitName = selectedComponent.props.subcircuitName as string
+    const sheetPath = selectedComponent.props.sheetPath as string | undefined
     const ports = (selectedComponent.props.ports as string[] | undefined) || []
     return (
       <div className="right-panel">
-        <div className="panel-header">Subcircuit Instance</div>
+        <div className="panel-header">{isSheetInstance ? 'Sheet Instance' : 'Subcircuit Instance'}</div>
         <div className="properties-content">
           <div style={{ marginBottom: 12 }}>
             <strong>{selectedComponent.name}</strong>
-            <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>Type: {subcircuitName}</div>
+            <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+              {isSheetInstance ? `Sheet: ${sheetPath || 'unresolved'}` : `Type: ${subcircuitName}`}
+            </div>
           </div>
 
           <button
             className="btn btn-primary"
             style={{ width: '100%', marginBottom: 12 }}
-            onClick={() => openSubcircuitEditor(subcircuitName)}
+            onClick={() => {
+              if (isSheetInstance && sheetPath) {
+                useEditorStore.getState().setActiveFilePath(sheetPath)
+                return
+              }
+              openSubcircuitEditor(subcircuitName)
+            }}
           >
-            Open Subcircuit
+            {isSheetInstance ? 'Open Sheet' : 'Open Subcircuit'}
           </button>
 
-          <div style={{ fontSize: 12, color: '#aaa', marginBottom: 8 }}>Ports</div>
+          <div style={{ fontSize: 12, color: '#aaa', marginBottom: 8 }}>{isSheetInstance ? 'Sheet Ports' : 'Ports'}</div>
           {ports.length === 0 ? (
             <div style={{ fontSize: 12, color: '#777' }}>No exposed ports</div>
           ) : (

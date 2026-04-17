@@ -11,7 +11,7 @@ import {
   SubcircuitRegistry,
   SymbolDefinition
 } from '../types/project'
-import { detectFileKind, getFolderForDetectedFileKind } from './fileClassification'
+import { detectFileKind, getFolderForDetectedFileKind, inferDetectedFileKind } from './fileClassification'
 
 export const DEFAULT_SYMBOLS_FOLDER = `
 export const ResistorSymbol = () => (
@@ -73,7 +73,7 @@ export const buildProjectFileTree = (fsMap: FSMap): FileTreeNode => {
     const normalizedPath = path.replace(/^\/+|\/+$/g, '')
     if (!normalizedPath) return
 
-    const detectedKind = detectFileKind(content)
+    const detectedKind = inferDetectedFileKind(normalizedPath, content)
     const parts = normalizedPath.split('/')
     const fileName = parts[parts.length - 1]
     const actualParentFolderPath = parts.slice(0, -1).join('/')
@@ -121,14 +121,33 @@ export const isValidSubcircuit = (code: string): boolean => {
   return true
 }
 
-const extractPortsFromSubcircuitContent = (content: string): string[] => {
-  const portsMatch = content.match(/export const ports\s*=\s*\[(.*?)\]\s*as const/s)
-  if (!portsMatch) return []
+export const extractPortsFromSubcircuitContent = (content: string): string[] => {
+  const unique = (values: string[]) => Array.from(new Set(values.map(value => value.trim()).filter(Boolean)))
 
-  return portsMatch[1]
-    .split(',')
-    .map(p => p.trim().replace(/"/g, '').replace(/'/g, ''))
-    .filter(Boolean)
+  const exportedPortsMatch = content.match(/export\s+const\s+ports\s*=\s*\[([\s\S]*?)\]\s*as\s+const/)
+  if (exportedPortsMatch?.[1]) {
+    const explicitPorts = [...exportedPortsMatch[1].matchAll(/["']([^"']+)["']/g)]
+      .map(match => match[1])
+    if (explicitPorts.length > 0) {
+      return unique(explicitPorts)
+    }
+  }
+
+  const taggedPorts = [...content.matchAll(/<port\b[^>]*name=["']([^"']+)["'][^>]*\/?>(?:<\/port>)?/g)]
+    .map(match => match[1])
+  if (taggedPorts.length > 0) {
+    return unique(taggedPorts)
+  }
+
+  const namedNets = [...content.matchAll(/<net\b[^>]*name=["']([^"']+)["'][^>]*\/?>(?:<\/net>)?/g)]
+    .map(match => match[1])
+  if (namedNets.length > 0) {
+    return unique(namedNets)
+  }
+
+  const tracedNets = [...content.matchAll(/\bnet\.([A-Za-z_][A-Za-z0-9_]*)\b/g)]
+    .map(match => match[1])
+  return unique(tracedNets)
 }
 
 export const extractImportPaths = (code: string): string[] => {
@@ -178,13 +197,82 @@ export const resolveImportPath = (fromPath: string, importPath: string, fsMap?: 
   const importSegments = importPath.split('/')
   const normalizedSegments = normalizePathSegments([...baseSegments, ...importSegments])
   const stem = normalizedSegments.join('/')
-  const candidates = [stem, `${stem}.tsx`, `${stem}.ts`, `${stem}/index.ts`, `${stem}/index.tsx`]
+  const stemWithoutExtension = stem.replace(/\.(tsx|ts)$/i, '')
+  const candidates = Array.from(new Set([
+    stem,
+    `${stemWithoutExtension}.tsx`,
+    `${stemWithoutExtension}.ts`,
+    `${stemWithoutExtension}/index.ts`,
+    `${stemWithoutExtension}/index.tsx`
+  ]))
 
   if (!fsMap) {
-    return candidates[1] || null
+    return candidates[0] || null
   }
 
   return candidates.find(candidate => !!fsMap[candidate]) || null
+}
+
+export const resolveProjectPath = (fromPath: string, targetPath: string, fsMap?: FSMap): string | null => {
+  if (!targetPath) return null
+
+  if (targetPath.startsWith('.')) {
+    return resolveImportPath(fromPath, targetPath, fsMap)
+  }
+
+  const normalized = targetPath.replace(/^\/+/, '')
+  const candidates = [
+    normalized,
+    normalized.endsWith('.tsx') || normalized.endsWith('.ts') ? normalized : `${normalized}.tsx`,
+    `schematics/${normalized.replace(/^schematics\//, '')}`,
+    `schematics/${normalized.replace(/^schematics\//, '')}.tsx`
+  ]
+
+  if (!fsMap) {
+    return candidates[0] || null
+  }
+
+  return candidates.find(candidate => !!fsMap[candidate]) || null
+}
+
+export const extractSheetReferences = (code: string): Array<{ name: string; src: string }> => {
+  return [...code.matchAll(/<sheet\b([^>]*)\/>/g)]
+    .map(match => {
+      const attrs = match[1] || ''
+      const src = attrs.match(/\bsrc="([^"]+)"/)?.[1] || ''
+      const name = attrs.match(/\bname="([^"]+)"/)?.[1] || ''
+      return { name, src }
+    })
+    .filter(entry => !!entry.src)
+}
+
+export const detectRootSchematic = (entryFiles: string[]): string | null => {
+  const preferred = [...entryFiles].find(path => /(^|\/)main\.tsx$/i.test(path))
+  if (preferred) return preferred
+
+  const sorted = [...entryFiles].sort((a, b) => a.localeCompare(b))
+  return sorted[0] || null
+}
+
+export const buildSchematicHierarchy = (fsMap: FSMap): { rootFile: string | null; hierarchy: Record<string, string[]> } => {
+  const entryFiles = Object.entries(fsMap)
+    .filter(([path, code]) => inferDetectedFileKind(path, code) === 'schematic')
+    .map(([path]) => path)
+
+  const hierarchy = entryFiles.reduce<Record<string, string[]>>((acc, filePath) => {
+    const content = fsMap[filePath] || ''
+    const children = extractSheetReferences(content)
+      .map(ref => resolveProjectPath(filePath, ref.src, fsMap))
+      .filter((path): path is string => !!path)
+
+    acc[filePath] = Array.from(new Set(children))
+    return acc
+  }, {})
+
+  return {
+    rootFile: detectRootSchematic(entryFiles),
+    hierarchy
+  }
 }
 
 export const buildSubcircuitRegistry = (fsMap: FSMap): SubcircuitRegistry => {
@@ -209,8 +297,13 @@ export const buildDependencyGraph = (fsMap: FSMap): DependencyGraph => {
   })
 
   Object.entries(fsMap).forEach(([path, content]) => {
-    extractImportPaths(content).forEach((importPath) => {
-      const resolved = resolveImportPath(path, importPath, fsMap)
+    const dependencyRefs = [
+      ...extractImportPaths(content),
+      ...extractSheetReferences(content).map(ref => ref.src)
+    ]
+
+    dependencyRefs.forEach((refPath) => {
+      const resolved = resolveProjectPath(path, refPath, fsMap)
       if (!resolved || !graph[resolved]) return
 
       if (!graph[path].imports.includes(resolved)) {
@@ -229,9 +322,16 @@ export const getBrokenImports = (fsMap: FSMap): Array<{ filePath: string; import
   const broken: Array<{ filePath: string; importPath: string }> = []
 
   Object.entries(fsMap).forEach(([path, content]) => {
-    extractImportPaths(content).forEach((importPath) => {
-      if (!importPath.startsWith('.')) return
-      const resolved = resolveImportPath(path, importPath, fsMap)
+    const dependencyRefs = [
+      ...extractImportPaths(content),
+      ...extractSheetReferences(content).map(ref => ref.src)
+    ]
+
+    dependencyRefs.forEach((importPath) => {
+      const looksResolvable = importPath.startsWith('.') || importPath.includes('/')
+      if (!looksResolvable) return
+
+      const resolved = resolveProjectPath(path, importPath, fsMap)
       if (!resolved) {
         broken.push({ filePath: path, importPath })
       }
@@ -300,13 +400,14 @@ export const buildComponentUsage = (fsMap: FSMap): ComponentUsageMap => {
 
 export const buildImportedProjectState = (fsMap: FSMap): ImportedProjectState => {
   const files = Object.entries(fsMap).reduce<Record<string, ImportedProjectFile>>((acc, [path, code]) => {
-    const kind = detectFileKind(code)
+    const kind = inferDetectedFileKind(path, code)
     acc[path] = {
       path,
       code,
       kind,
       exports: extractExportNames(code),
-      imports: extractImportPaths(code)
+      imports: extractImportPaths(code),
+      sheets: extractSheetReferences(code).map(ref => ref.src)
     }
     return acc
   }, {})
@@ -317,11 +418,14 @@ export const buildImportedProjectState = (fsMap: FSMap): ImportedProjectState =>
   const entryFiles = Object.values(files)
     .filter(file => file.kind === 'schematic')
     .map(file => file.path)
+  const { rootFile, hierarchy } = buildSchematicHierarchy(fsMap)
 
   return {
     files,
     registry,
     entryFiles,
+    rootFile,
+    hierarchy,
     dependencyGraph: buildDependencyGraph(fsMap),
     componentUsage: buildComponentUsage(fsMap)
   }
@@ -409,7 +513,7 @@ export const getFilesByFolder = (fsMap: FSMap, folder: 'symbols' | 'subcircuits'
   Object.entries(fsMap).forEach(([path, content]) => {
     if (!path.endsWith('.tsx')) return
 
-    const detectedKind = detectFileKind(content)
+    const detectedKind = inferDetectedFileKind(path, content)
     const matchesFolder =
       (folder === 'schematics' && detectedKind === 'schematic') ||
       (folder === 'subcircuits' && detectedKind === 'subcircuit') ||

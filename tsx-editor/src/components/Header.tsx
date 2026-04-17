@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import JSZip from 'jszip'
 import { useEditorStore } from '../store/editorStore'
 import { pixelToSchematic } from '../utils/coordinateScale'
-import { buildSubcircuitRegistry, extractBatchFilesFromZip } from '../utils/projectManager'
+import { buildImportedProjectState, buildSubcircuitRegistry, extractBatchFilesFromZip } from '../utils/projectManager'
 import { getApplicablePatches } from '../lib/patches'
 
 const MAIN_SCHEMATIC_PATH = 'schematics/main.tsx'
@@ -18,7 +19,6 @@ export const Header: React.FC = () => {
     copySelectedComponents,
     pasteCopiedComponents,
     generateFlatCircuitTSX,
-    generateProjectStructure,
     importTSXIntoActiveFile,
     importFilesBatch,
     applyPatch,
@@ -52,19 +52,24 @@ export const Header: React.FC = () => {
   const [selectedPatchId, setSelectedPatchId] = useState('')
   const [isLayouting, setIsLayouting] = useState(false)
   const [isZipImporting, setIsZipImporting] = useState(false)
+  const [isZipExporting, setIsZipExporting] = useState(false)
   const zipInputRef = useRef<HTMLInputElement | null>(null)
 
   const subcircuitRegistry = useMemo(() => buildSubcircuitRegistry(fsMap), [fsMap])
   const applicablePatches = useMemo(() => getApplicablePatches(subcircuitRegistry), [subcircuitRegistry])
 
-  const downloadTextFile = (content: string, fileName: string) => {
-    const blob = new Blob([content], { type: 'text/plain' })
+  const downloadBlobFile = (blob: Blob, fileName: string) => {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
     link.download = fileName
     link.click()
     URL.revokeObjectURL(url)
+  }
+
+  const downloadTextFile = (content: string, fileName: string) => {
+    const blob = new Blob([content], { type: 'text/plain' })
+    downloadBlobFile(blob, fileName)
   }
 
   useEffect(() => {
@@ -183,7 +188,9 @@ export const Header: React.FC = () => {
     importFilesBatch(files)
     setShowBatchImportDialog(false)
     setBatchImportContent('')
-    alert(`Imported ${files.length} files and rebuilt the reusable block registry.`)
+
+    const importedProject = buildImportedProjectState(useEditorStore.getState().fsMap)
+    alert(`Imported ${files.length} files • root: ${importedProject.rootFile || 'none'} • ${importedProject.entryFiles.length} schematic page(s) • ${Object.keys(importedProject.registry).length} reusable block(s).`)
   }
 
   const handleBatchImport = () => {
@@ -322,18 +329,28 @@ export const Header: React.FC = () => {
     }
   }
 
-  const handleExportZip = () => {
+  const handleExportZip = async () => {
+    setIsZipExporting(true)
     try {
-      const structure = generateProjectStructure()
-      const timestamp = Date.now()
-      downloadTextFile(structure.parent, `circuit-${timestamp}.tsx`)
-      Object.entries(structure.children).forEach(([path, content], index) => {
-        const fileName = path.split('/').pop() || 'file.tsx'
-        setTimeout(() => downloadTextFile(content, `circuit-${fileName}`), 100 * (index + 1))
+      const workspaceJson = exportWorkspaceJSON()
+      const ws = JSON.parse(workspaceJson) as { name?: string }
+      const safeName = (ws.name || 'workspace').replace(/[^a-z0-9_-]/gi, '_')
+      const zip = new JSZip()
+      const root = zip.folder(safeName) || zip
+
+      Object.entries(fsMap).forEach(([path, content]) => {
+        root.file(path, content)
       })
-      alert('Project structure exported successfully!')
+
+      root.file('workspace-export.json', workspaceJson)
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' })
+      downloadBlobFile(zipBlob, `${safeName}-${Date.now()}.zip`)
+      alert(`Exported ${Object.keys(fsMap).length} files as a workspace zip.`)
     } catch (error) {
-      alert('Failed to export: ' + (error as Error).message)
+      alert('Failed to export zip: ' + (error as Error).message)
+    } finally {
+      setIsZipExporting(false)
     }
   }
 
@@ -354,8 +371,8 @@ export const Header: React.FC = () => {
           <button className="btn btn-secondary" onClick={handleAutoWire} disabled={placedComponents.length === 0}>
             Auto Wire
           </button>
-          <button className="btn btn-secondary" onClick={handleExportZip} disabled={placedComponents.length === 0}>
-            Export Structure
+          <button className="btn btn-secondary" onClick={handleExportZip} disabled={isZipExporting || Object.keys(fsMap).length === 0}>
+            {isZipExporting ? 'Exporting Zip...' : 'Export Zip'}
           </button>
           <button className="btn btn-secondary" onClick={() => setShowImportDialog(true)}>Import TSX</button>
           <button className="btn btn-secondary" onClick={() => setShowBatchImportDialog(true)}>Import Batch</button>

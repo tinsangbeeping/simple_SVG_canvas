@@ -1,19 +1,21 @@
 import { create } from 'zustand'
 import { getCatalogItem } from '../catalog'
 import { loadEditorMeta, saveEditorMeta, getNetAnchor, setNetAnchor } from './metaHelpers'
-import * as parser from '@babel/parser'
 import { WorkspaceData, StoredWorkspaceState } from '../types/workspace'
 import { PatchDefinition } from '../types/project'
 import {
   classifyFilePath,
   detectFileKind,
   getFolderForDetectedFileKind,
+  inferDetectedFileKind,
   isCanvasEditableFileType
 } from '../utils/fileClassification'
 import {
   buildDependencyGraph,
   buildImportedProjectState,
   buildSubcircuitRegistry,
+  extractPortsFromSubcircuitContent,
+  resolveProjectPath,
   validateImports
 } from '../utils/projectManager'
 import {
@@ -123,7 +125,7 @@ const isCanvasEditableFilePath = (filePath: string): boolean => {
 }
 
 const validateFilePlacement = (filePath: string, content: string): void => {
-  const kind = detectFileKind(content)
+  const kind = inferDetectedFileKind(filePath, content)
   if (kind === 'unknown') return
 
   if (kind === 'schematic' && !isSchematicFilePath(filePath)) {
@@ -146,7 +148,7 @@ const getCanonicalFilePathForContent = (
   options?: { preserveRequestedPath?: boolean }
 ): string => {
   const normalizedRequestedPath = requestedPath === LEGACY_MAIN_PATH ? SCHEMATIC_MAIN_PATH : requestedPath
-  const kind = detectFileKind(content)
+  const kind = inferDetectedFileKind(normalizedRequestedPath, content)
 
   if (kind === 'unknown') {
     return normalizedRequestedPath
@@ -185,7 +187,7 @@ const reconcileFsMapStructure = (rawMap: FSMap): FSMap => {
   Object.entries(rawMap).forEach(([filePath, content]) => {
     if (!(filePath.endsWith('.tsx') || filePath === LEGACY_MAIN_PATH)) return
 
-    const kind = detectFileKind(content)
+    const kind = inferDetectedFileKind(filePath, content)
     if (kind === 'unknown') {
       if (filePath === LEGACY_MAIN_PATH && !nextMap[SCHEMATIC_MAIN_PATH]) {
         nextMap[SCHEMATIC_MAIN_PATH] = content
@@ -260,7 +262,7 @@ const buildSymbolModule = (name: string, body: string): string => {
 
 const detectStandaloneImport = (content: string): { kind: 'schematic' | 'subcircuit' | 'symbol'; suggestedName: string } | null => {
   const trimmed = content.trim()
-  const kind = detectFileKind(trimmed)
+  const kind = inferDetectedFileKind('ImportedThing.tsx', trimmed)
   if (kind === 'unknown') return null
 
   const exportedName = toSafeIdentifier(extractExportedIdentifier(trimmed) || 'ImportedThing')
@@ -483,71 +485,43 @@ const loadFSMapFromStorage = (): FSMap => {
 }
 
 const extractExplicitSubcircuitPorts = (content: string): string[] | null => {
-  try {
-    const ast = parser.parse(content, {
-      sourceType: 'module',
-      plugins: ['jsx', 'typescript']
-    })
-
-    for (const node of ast.program.body) {
-      if (node.type !== 'ExportNamedDeclaration') continue
-      const declaration = node.declaration
-      if (!declaration || declaration.type !== 'VariableDeclaration') continue
-
-      for (const decl of declaration.declarations) {
-        if (decl.id.type !== 'Identifier' || decl.id.name !== 'ports') continue
-
-        const init = decl.init
-        if (!init) return null
-
-        const arrayExpr =
-          init.type === 'TSAsExpression' || init.type === 'TSSatisfiesExpression'
-            ? init.expression
-            : init
-
-        if (arrayExpr.type !== 'ArrayExpression') return null
-
-        const values: string[] = []
-        for (const element of arrayExpr.elements) {
-          if (!element || element.type !== 'StringLiteral') return null
-          values.push(element.value)
-        }
-
-        return values
-      }
-    }
-
-    return null
-  } catch {
-    return null
-  }
+  const ports = extractPortsFromSubcircuitContent(content)
+  return ports.length > 0 ? ports : null
 }
-const warnedSubcircuitPortFallback = new Set<string>()
 
 const getSubcircuitPorts = (fsMap: FSMap, name: string): string[] => {
   const registry = buildSubcircuitRegistry(fsMap)
   const filePath = registry[name]?.filePath || `subcircuits/${name}.tsx`
   const content = fsMap[filePath] || ''
 
-  const explicitPorts = extractExplicitSubcircuitPorts(content)
-  if (explicitPorts) {
-    return explicitPorts
+  return extractExplicitSubcircuitPorts(content) || []
+}
+
+const getSheetPorts = (fsMap: FSMap, sheetPath: string): string[] => {
+  const content = fsMap[sheetPath] || ''
+  if (!content) return []
+
+  const explicit = [...content.matchAll(/<port\b[^>]*name="([^"]+)"[^>]*\/>/g)]
+    .map(match => match[1].trim())
+    .filter(Boolean)
+
+  if (explicit.length > 0) {
+    return Array.from(new Set(explicit))
   }
 
-  if (!warnedSubcircuitPortFallback.has(filePath)) {
-    warnedSubcircuitPortFallback.add(filePath)
-    console.warn(`[subcircuit ports] Falling back to net.* scan for ${filePath}; add \`export const ports = ["..."] as const\``)
+  const fromExport = content.match(/export const ports\s*=\s*\[(.*?)\]\s*as const/s)
+  if (fromExport?.[1]) {
+    return fromExport[1]
+      .split(',')
+      .map(value => value.trim().replace(/['"]/g, ''))
+      .filter(Boolean)
   }
 
-  const ports = new Set<string>()
-  const netRegex = /net\.([A-Za-z_][A-Za-z0-9_]*)/g
-  let m
+  const nets = [...content.matchAll(/<net\b[^>]*name="([^"]+)"[^>]*\/>/g)]
+    .map(match => match[1].trim())
+    .filter(Boolean)
 
-  while ((m = netRegex.exec(content)) !== null) {
-    ports.add(m[1])
-  }
-
-  return [...ports]
+  return Array.from(new Set(nets))
 }
 
 const regenerateSubcircuitIndex = (fsMap: FSMap): FSMap => {
@@ -589,9 +563,16 @@ const getRelativeImportPath = (fromFilePath: string, toFilePath: string): string
 }
 
 const parseComponentRef = (ref: string): { componentName: string; pinName: string } | null => {
-  const m = ref.match(/^\.([A-Za-z_][A-Za-z0-9_]*)\s*>\s*\.([A-Za-z_][A-Za-z0-9_]*)$/)
-  if (!m) return null
-  return { componentName: m[1], pinName: m[2] }
+  const arrowForm = ref.match(/^\.([A-Za-z_][A-Za-z0-9_]*)\s*>\s*\.([A-Za-z_][A-Za-z0-9_]*)$/)
+  if (arrowForm) {
+    return { componentName: arrowForm[1], pinName: arrowForm[2] }
+  }
+
+  const dotForm = ref.match(/^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/)
+  if (!dotForm) return null
+  if (dotForm[1].toLowerCase() === 'net') return null
+
+  return { componentName: dotForm[1], pinName: dotForm[2] }
 }
 
 const normalizePatchComponentSpec = (
@@ -975,6 +956,14 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     if (!name) {
       if (tagName === 'netlabel') {
         name = `netlabel-${components.length + 1}`
+      } else if (tagName === 'sheet') {
+        const fallbackSheetName = String(props.src || `Sheet${components.length + 1}`)
+          .split('/')
+          .pop()
+          ?.replace(/\.(tsx|ts)$/, '') || `Sheet${components.length + 1}`
+        name = fallbackSheetName
+      } else if (tagName === 'port') {
+        name = `PORT${components.length + 1}`
       } else {
         continue
       }
@@ -985,14 +974,27 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       props.pinNames !== undefined ||
       props.symbolPreset !== undefined
     )
+    const isSheetReference = tagName === 'sheet'
+    const isExplicitSheetPort = tagName === 'port'
     const effectiveCatalogId = isCustomChip ? 'customchip' : tagName
-    const isKnownPart = !!getCatalogItem(effectiveCatalogId)
+    const isKnownPart = !isSheetReference && !isExplicitSheetPort && !!getCatalogItem(effectiveCatalogId)
     const id = `comp-${filePath}-${name}-${components.length}`
 
     const isSymbolReference = symbolNames.has(tagName)
     const subcircuitDefinition = subcircuitRegistry[tagName]
 
-    if (!isKnownPart && !isSymbolReference) {
+    if (isSheetReference) {
+      const rawSheetSrc = String(props.src || '')
+      const resolvedSheetPath = resolveProjectPath(filePath, rawSheetSrc, fsMap)
+        || resolveProjectPath(filePath, rawSheetSrc)
+        || rawSheetSrc
+      props.sheetPath = resolvedSheetPath
+      props.sheetName = name
+      props.ports = resolvedSheetPath ? getSheetPorts(fsMap, resolvedSheetPath) : []
+    } else if (isExplicitSheetPort) {
+      props.netName = canonicalizeNetName(name)
+      props.isSheetPort = true
+    } else if (!isKnownPart && !isSymbolReference) {
       const ports = subcircuitDefinition?.ports || getSubcircuitPorts(fsMap, tagName)
       props.subcircuitName = tagName
       props.subcircuitPath = subcircuitDefinition?.filePath || `subcircuits/${tagName}.tsx`
@@ -1001,7 +1003,11 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
 
     const component: PlacedComponent = {
       id,
-      catalogId: isKnownPart
+      catalogId: isExplicitSheetPort
+        ? 'netport'
+        : isSheetReference
+        ? 'sheet-instance'
+        : isKnownPart
         ? effectiveCatalogId
         : isSymbolReference
         ? 'symbol-instance'
@@ -1024,6 +1030,21 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   const explicitNetComponents = new Map<string, string[]>()
 
   components.forEach((component) => {
+    if (component.catalogId === 'netport') {
+      const netName = String(component.props.netName || component.props.name || component.name || '').trim()
+      if (!netName) return
+      const netId = netRegistry.getNetId(netName)
+      component.props = {
+        ...component.props,
+        netId,
+        netName: netRegistry.getNetName(netId) || netName
+      }
+      if (!netPortComponents.has(netId)) {
+        netPortComponents.set(netId, component.id)
+      }
+      return
+    }
+
     if (component.catalogId !== 'net') return
     const netName = String(component.props.name || component.name || '').trim()
     if (!netName) return
@@ -1283,6 +1304,9 @@ const getComponentTagName = (component: PlacedComponent): string => {
   if (component.catalogId === 'subcircuit-instance') {
     return component.props.subcircuitName || component.name
   }
+  if (component.catalogId === 'sheet-instance') {
+    return 'sheet'
+  }
   if (component.catalogId === 'symbol-instance') {
     return component.props.symbolName || component.name
   }
@@ -1320,7 +1344,7 @@ const getAutoWireTargets = (component: PlacedComponent): Array<{ pinName: string
     })
   }
 
-  if (component.catalogId === 'subcircuit-instance' && Array.isArray(component.props?.ports)) {
+  if ((component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') && Array.isArray(component.props?.ports)) {
     ;(component.props.ports as unknown[]).forEach((port) => {
       const pinName = String(port)
       const netName = inferCommonNetForPin(pinName)
@@ -1337,6 +1361,66 @@ const getAutoWireTargets = (component: PlacedComponent): Array<{ pinName: string
   })
 
   return Array.from(inferred.entries()).map(([pinName, netName]) => ({ pinName, netName }))
+}
+
+const getSelectablePinsForComponent = (component: PlacedComponent): string[] => {
+  if (component.catalogId === 'net' || component.catalogId === 'netport') {
+    return ['port']
+  }
+
+  if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
+    const ports = (component.props.ports as string[] | undefined) || []
+    return ports.length > 0 ? ports : ['IO']
+  }
+
+  if (component.catalogId === 'customchip') {
+    const legacyCount = Math.max(2, Number(component.props.pinCount || 8))
+    const leftCount = Math.max(0, Number(component.props.leftPins ?? Math.ceil(legacyCount / 2)))
+    const rightCount = Math.max(0, Number(component.props.rightPins ?? Math.floor(legacyCount / 2)))
+    const topCount = Math.max(0, Number(component.props.topPins ?? 0))
+    const bottomCount = Math.max(0, Number(component.props.bottomPins ?? 0))
+
+    const namedMap = new Map<string, string>()
+    const rawNames = String(component.props.pinNames || '').trim()
+    if (rawNames.includes('=')) {
+      rawNames
+        .split(',')
+        .map((entry: string) => entry.trim())
+        .filter(Boolean)
+        .forEach((entry: string) => {
+          const [slot, ...rest] = entry.split('=')
+          const slotKey = slot.trim().toUpperCase()
+          const pinLabel = rest.join('=').trim()
+          if (slotKey && pinLabel) {
+            namedMap.set(slotKey, pinLabel)
+          }
+        })
+    }
+
+    const legacyNames = !rawNames.includes('=')
+      ? rawNames.split(',').map((value: string) => value.trim()).filter(Boolean)
+      : []
+    let legacyCursor = 0
+
+    const getName = (slotKey: string, fallback: string) => {
+      if (namedMap.has(slotKey)) return namedMap.get(slotKey) as string
+      if (legacyCursor < legacyNames.length) {
+        const fromLegacy = legacyNames[legacyCursor]
+        legacyCursor += 1
+        return fromLegacy
+      }
+      return fallback
+    }
+
+    const pins: string[] = []
+    for (let i = 0; i < leftCount; i += 1) pins.push(getName(`L${i + 1}`, `L${i + 1}`))
+    for (let i = 0; i < rightCount; i += 1) pins.push(getName(`R${i + 1}`, `R${i + 1}`))
+    for (let i = 0; i < topCount; i += 1) pins.push(getName(`U${i + 1}`, `U${i + 1}`))
+    for (let i = 0; i < bottomCount; i += 1) pins.push(getName(`D${i + 1}`, `D${i + 1}`))
+    return pins
+  }
+
+  return (getPinConfig(component.catalogId)?.pins || []).map(pin => pin.name)
 }
 
 const buildNetRegistryFromComponents = (components: PlacedComponent[]): NetRegistry => {
@@ -1363,6 +1447,9 @@ const toAttrList = (props: Record<string, any>): string[] => {
       'schRotation',
       'subcircuitName',
       'subcircuitPath',
+      'sheetName',
+      'sheetPath',
+      'src',
       'ports',
       'netName',
       'netId',
@@ -1385,8 +1472,8 @@ const toAttrList = (props: Record<string, any>): string[] => {
   return attrs
 }
 
-const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: boolean): string => {
-  if (component.catalogId === 'netport') return ''
+const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: boolean, activeFilePath?: string): string => {
+  if (component.catalogId === 'netport' && !component.props.isSheetPort) return ''
 
   const tagName = getComponentTagName(component)
   const normalizedProps = { ...component.props }
@@ -1439,6 +1526,24 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
   const commentX = inSubcircuitFile ? `x + ${coordX}` : coordX
   const commentY = inSubcircuitFile ? `y + ${coordY}` : coordY
 
+  if (component.catalogId === 'netport' && component.props.isSheetPort) {
+    return [`{/* // schX={${commentX}} */}`, `{/* // schY={${commentY}} */}`, `<port`, `  name="${name}"`, '/>'].join('\n')
+  }
+
+  if (component.catalogId === 'sheet-instance') {
+    const resolvedSheetPath = String(normalizedProps.sheetPath || normalizedProps.src || '').trim()
+    const sheetSrc = activeFilePath && resolvedSheetPath
+      ? `${getRelativeImportPath(activeFilePath, resolvedSheetPath)}.tsx`
+      : String(normalizedProps.src || resolvedSheetPath || '')
+
+    const sheetLines = [`{/* // schX={${commentX}} */}`, `{/* // schY={${commentY}} */}`, `<sheet`, `  name="${name}"`, `  src="${sheetSrc}"`]
+    if (rotation !== '0deg') {
+      sheetLines.push(`  schRotation="${rotation}"`)
+    }
+    sheetLines.push('/>')
+    return sheetLines.join('\n')
+  }
+
   const multiline = [`{/* // schX={${commentX}} */}`, `{/* // schY={${commentY}} */}`, `<${tagName}`, ...propLines.map(line => `  ${line}`), '/>']
   return multiline.join('\n')
 }
@@ -1453,6 +1558,9 @@ const traceEndpointRef = (component: PlacedComponent | undefined, pinName: strin
   }
   const cleanName = sanitizeComponentName(String(component.name || component.props.name || ''))
   if (!cleanName) return null
+  if (component.catalogId === 'sheet-instance') {
+    return `${cleanName}.${pinName}`
+  }
   return `.${cleanName} > .${pinName}`
 }
 
@@ -1558,7 +1666,7 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   } = normalizeLogicalNets(merged.components, merged.wires)
 
   const renderedComponents = normalizedComponents
-    .map(component => createComponentSnippet(component, inSubcircuit))
+    .map(component => createComponentSnippet(component, inSubcircuit, filePath))
     .filter(Boolean)
     .map(line => line.split('\n').map(inner => `    ${inner}`).join('\n'))
 
@@ -1614,7 +1722,15 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   }
 
   const subcircuitName = filePath.replace('subcircuits/', '').replace('.tsx', '')
-  return `export function ${subcircuitName}(props: { name: string; schX?: number; schY?: number }) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n${body}\n    </subcircuit>\n  )\n}\n`
+  const publicPorts = Array.from(new Set(
+    normalizedComponents
+      .filter(component => component.catalogId === 'netport' && !!component.props.isSheetPort)
+      .map(component => String(component.props.netName || component.props.name || component.name || '').trim())
+      .filter(Boolean)
+  ))
+  const portsConst = `export const ports = [${publicPorts.map(port => `"${port}"`).join(', ')}] as const\n\n`
+
+  return `${portsConst}export function ${subcircuitName}(props: { name: string; schX?: number; schY?: number }) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n${body}\n    </subcircuit>\n  )\n}\n`
 }
 
 const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): string => {
@@ -1669,7 +1785,7 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
     const localById = new Map(parsed.components.map(component => [component.id, component]))
 
     parsed.components.forEach((component) => {
-      if (component.catalogId === 'subcircuit-instance') {
+      if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
         return
       }
 
@@ -1702,12 +1818,14 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
     })
 
     parsed.components
-      .filter(component => component.catalogId === 'subcircuit-instance')
+      .filter(component => component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance')
       .forEach((component) => {
-        const subName = String(component.props.subcircuitName || component.name || '').trim()
-        if (!subName) return
+        const targetPath = component.catalogId === 'sheet-instance'
+          ? String(component.props.sheetPath || '').trim()
+          : String(component.props.subcircuitPath || `subcircuits/${String(component.props.subcircuitName || component.name || '').trim()}.tsx`).trim()
+        if (!targetPath) return
 
-        const nestedPrefixBase = instancePrefix ? `${instancePrefix}${component.name}` : String(component.name || subName)
+        const nestedPrefixBase = instancePrefix ? `${instancePrefix}${component.name}` : String(component.name || 'sheet')
         const nestedPrefix = `${nestedPrefixBase}__`
         const nestedPortMap = new Map<string, string>()
         const ports = ((component.props.ports as string[] | undefined) || []).map(port => String(port))
@@ -1716,9 +1834,8 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
           nestedPortMap.set(portName, `${nestedPrefix}${portName}`)
         })
 
-        const subPath = `subcircuits/${subName}.tsx`
         expandFile(
-          subPath,
+          targetPath,
           offsetX + Number(component.props.schX || 0),
           offsetY + Number(component.props.schY || 0),
           nestedPrefix,
@@ -1730,8 +1847,8 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
       const component = localById.get(endpoint.componentId)
       if (!component) return null
 
-      if (component.catalogId === 'subcircuit-instance') {
-        const nestedPrefixBase = instancePrefix ? `${instancePrefix}${component.name}` : String(component.name || component.props.subcircuitName || 'sub')
+      if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
+        const nestedPrefixBase = instancePrefix ? `${instancePrefix}${component.name}` : String(component.name || component.props.subcircuitName || component.props.sheetName || 'sheet')
         const netName = `${nestedPrefixBase}__${endpoint.pinName}`
         return { componentId: ensureNetEndpoint(netName), pinName: 'port' }
       }
@@ -1767,7 +1884,7 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
   expandFile(effectiveRootPath, 0, 0, '')
 
   const renderedComponents = flatComponents
-    .map(component => createComponentSnippet(component, false))
+    .map(component => createComponentSnippet(component, false, effectiveRootPath))
     .filter(Boolean)
     .map(line => `    ${line}`)
 
@@ -1827,12 +1944,27 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setFSMap: (fsMap) => {
     const next = regenerateSubcircuitIndex(ensureFsMapDefaults(fsMap))
     const state = get()
+    const normalizedFiles = normalizeWorkspaceFileSelection(next, state.activeFilePath, state.openFilePaths)
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, next)
     const nextWorkspaces = {
       ...state.workspaces,
-      [state.activeWorkspaceId]: { ...state.workspaces[state.activeWorkspaceId], fsMap: next }
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap: next,
+        activeFilePath: normalizedFiles.activeFilePath,
+        openFilePaths: normalizedFiles.openFilePaths
+      }
     }
     saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
-    set({ fsMap: next, workspaces: nextWorkspaces })
+    set({
+      fsMap: next,
+      workspaces: nextWorkspaces,
+      activeFilePath: normalizedFiles.activeFilePath,
+      openFilePaths: normalizedFiles.openFilePaths,
+      placedComponents: parsed.components,
+      wires: parsed.wires,
+      selectedComponentIds: []
+    })
   },
 
   setActiveFilePath: (filePath) => {
@@ -2491,6 +2623,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const selectedSet = new Set(componentIds)
     const candidatePins: SelectedPinRef[] = []
     const seen = new Set<string>()
+    const boundaryPins = new Set<string>()
 
     state.wires.forEach((wire) => {
       const fromInside = selectedSet.has(wire.from.componentId)
@@ -2499,6 +2632,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
       const endpoint = fromInside ? wire.from : wire.to
       const key = `${endpoint.componentId}:${endpoint.pinName}`
+      boundaryPins.add(key)
       if (seen.has(key)) return
       seen.add(key)
 
@@ -2508,23 +2642,29 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       })
     })
 
-    if (candidatePins.length === 0) {
-      state.placedComponents
-        .filter(component => selectedSet.has(component.id))
-        .forEach((component) => {
-          const pins = getPinConfig(component.catalogId)?.pins || []
-          pins.forEach((pin) => {
-            const key = `${component.id}:${pin.name}`
-            if (seen.has(key)) return
-            seen.add(key)
+    state.placedComponents
+      .filter(component => selectedSet.has(component.id))
+      .forEach((component) => {
+        getSelectablePinsForComponent(component).forEach((pinName) => {
+          const key = `${component.id}:${pinName}`
+          if (seen.has(key)) return
+          seen.add(key)
 
-            candidatePins.push({
-              componentId: component.id,
-              pinName: pin.name
-            })
+          candidatePins.push({
+            componentId: component.id,
+            pinName
           })
         })
-    }
+      })
+
+    candidatePins.sort((a, b) => {
+      const aKey = `${a.componentId}:${a.pinName}`
+      const bKey = `${b.componentId}:${b.pinName}`
+      const aBoundary = boundaryPins.has(aKey) ? 0 : 1
+      const bBoundary = boundaryPins.has(bKey) ? 0 : 1
+      if (aBoundary !== bBoundary) return aBoundary - bBoundary
+      return aKey.localeCompare(bKey)
+    })
 
     set({
       subcircuitCreation: {
@@ -2604,12 +2744,27 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         props: {
           netId,
           netName: canonicalName,
+          isSheetPort: true,
           schX: (sourceComponent.props.schX || 0) + 24,
           schY: sourceComponent.props.schY || 0
         },
         tsxSnippet: ''
       }
       nextComponents.push(netPortComponent)
+    } else {
+      netPortComponent = {
+        ...netPortComponent,
+        props: {
+          ...netPortComponent.props,
+          netId,
+          netName: canonicalName,
+          isSheetPort: true
+        }
+      }
+      const existingIndex = nextComponents.findIndex(component => component.id === netPortComponent!.id)
+      if (existingIndex >= 0) {
+        nextComponents[existingIndex] = netPortComponent
+      }
     }
 
     const alreadyConnected = state.wires.some(wire => (
@@ -2716,6 +2871,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         props: {
           netId,
           netName: canonicalName,
+          isSheetPort: true,
           schX: (source?.props.schX || 0) + 24,
           schY: (source?.props.schY || 0) + index * 12
         },
@@ -2989,7 +3145,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       if (!nextOpenFilePaths.includes(targetFilePath)) {
         nextOpenFilePaths.push(targetFilePath)
       }
-      if (detectFileKind(normalized) === 'schematic') {
+      if (inferDetectedFileKind(targetFilePath, normalized) === 'schematic') {
         importedSchematicPaths.push(targetFilePath)
       }
     })
@@ -2997,9 +3153,16 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const nextFsMap = regenerateSubcircuitIndex(ensureFsMapDefaults(nextFsMapSeed))
     validateImports(nextFsMap)
     const importedProject = buildImportedProjectState(nextFsMap)
+    console.log('[batch-import]', {
+      totalFiles: Object.keys(nextFsMap).length,
+      rootFile: importedProject.rootFile,
+      schematics: importedProject.entryFiles,
+      subcircuits: Object.keys(importedProject.registry)
+    })
     const preferredActivePath =
       [...importedSchematicPaths].reverse().find(path => importedProject.entryFiles.includes(path))
-      || importedProject.entryFiles.find(path => path !== SCHEMATIC_MAIN_PATH)
+      || importedProject.entryFiles.find(path => path !== SCHEMATIC_MAIN_PATH && path !== importedProject.rootFile)
+      || importedProject.rootFile
       || importedProject.entryFiles[0]
       || state.activeFilePath
     const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, preferredActivePath, nextOpenFilePaths)

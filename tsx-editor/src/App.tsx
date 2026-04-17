@@ -9,6 +9,7 @@ import { EnhancedPropertiesPanel } from './components/EnhancedPropertiesPanel'
 import { useEditorStore } from './store/editorStore'
 import {
   buildComponentUsage,
+  buildImportedProjectState,
   buildProjectFileTree,
   extractAllSubcircuits,
   extractAllSymbols
@@ -20,11 +21,12 @@ import './App.css'
 
 const MAIN_SCHEMATIC_PATH = 'schematics/main.tsx'
 
-type LeftTab = 'workspaces' | 'files' | 'components' | 'symbols' | 'subcircuits' | 'patches'
+type LeftTab = 'workspaces' | 'files' | 'schematics' | 'components' | 'symbols' | 'subcircuits' | 'patches'
 
 const TAB_LABELS: { id: LeftTab; label: string }[] = [
   { id: 'workspaces', label: 'WS' },
   { id: 'files',      label: 'Files' },
+  { id: 'schematics', label: 'Sch' },
   { id: 'components', label: 'Parts' },
   { id: 'symbols',    label: 'Sym' },
   { id: 'subcircuits',label: 'Sub' },
@@ -71,9 +73,15 @@ function App() {
   const activeFileType = classifyFilePath(activeFilePath || MAIN_SCHEMATIC_PATH)
   const canRenderCanvas = isCanvasEditableFileType(activeFileType)
 
+  const importedProject = buildImportedProjectState(fsMap)
   const symbolRegistry = extractAllSymbols(fsMap)
   const subcircuitRegistry = extractAllSubcircuits(fsMap)
   const componentUsage = buildComponentUsage(fsMap)
+  const schematicEntries = importedProject.entryFiles.map(path => ({
+    path,
+    name: path.split('/').pop()?.replace(/\.tsx$/, '') || path
+  }))
+  const childSheetPaths = new Set(Object.values(importedProject.hierarchy).flat())
   const applicablePatches = getApplicablePatches(
     Object.fromEntries(subcircuitRegistry.map(subckt => [subckt.name, { filePath: subckt.filePath, ports: subckt.ports }]))
   )
@@ -107,6 +115,25 @@ function App() {
     setEditingWsName('')
   }
 
+  const createNewSchematicFile = () => {
+    const baseName = prompt('New schematic page name (.tsx):', 'NewSheet')?.trim()
+    if (!baseName) return
+    const safeName = baseName.replace(/[^a-zA-Z0-9_]/g, '_')
+    if (!safeName) return
+
+    const filePath = `schematics/${safeName}.tsx`
+    if (fsMap[filePath]) {
+      setActiveFilePath(filePath)
+      return
+    }
+
+    setFSMap({
+      ...fsMap,
+      [filePath]: `export default () => (\n  <board width="50mm" height="50mm">\n    {/* Add components here */}\n  </board>\n)\n`
+    })
+    setActiveFilePath(filePath)
+  }
+
   const createNewSubcircuitFile = () => {
     const baseName = prompt('New subcircuit name (.tsx):', 'MySubcircuit')?.trim()
     if (!baseName) return
@@ -134,6 +161,61 @@ function App() {
     }
     setFSMap(nextMap)
     setActiveFilePath(filePath)
+  }
+
+  const getSheetPortsFromFile = (filePath: string): string[] => {
+    const content = fsMap[filePath] || ''
+    const explicitPorts = [...content.matchAll(/<port\b[^>]*name="([^"]+)"[^>]*\/>/g)]
+      .map(match => match[1].trim())
+      .filter(Boolean)
+
+    if (explicitPorts.length > 0) return Array.from(new Set(explicitPorts))
+
+    const namedNets = [...content.matchAll(/<net\b[^>]*name="([^"]+)"[^>]*\/>/g)]
+      .map(match => match[1].trim())
+      .filter(Boolean)
+
+    return Array.from(new Set(namedNets))
+  }
+
+  const renderSchematicNode = (filePath: string, depth = 0, seen = new Set<string>()): React.ReactNode => {
+    if (seen.has(filePath)) return null
+    const nextSeen = new Set(seen)
+    nextSeen.add(filePath)
+
+    const displayName = filePath.split('/').pop()?.replace(/\.tsx$/, '') || filePath
+    const children = importedProject.hierarchy[filePath] || []
+    const isRoot = importedProject.rootFile === filePath
+
+    return (
+      <div key={filePath}>
+        <div
+          draggable
+          style={{
+            padding: '6px 8px',
+            marginBottom: 4,
+            marginLeft: depth * 12,
+            borderRadius: 4,
+            cursor: 'pointer',
+            background: filePath === activeFilePath ? '#094771' : '#2a2a2a',
+            color: filePath === activeFilePath ? '#fff' : '#ccc',
+            fontSize: 12,
+            border: isRoot ? '1px solid #4caf50' : '1px solid transparent'
+          }}
+          onClick={() => setActiveFilePath(filePath)}
+          onDragStart={(e) => {
+            e.dataTransfer.setData('sheetName', displayName)
+            e.dataTransfer.setData('sheetPath', filePath)
+            e.dataTransfer.setData('sheetPorts', JSON.stringify(getSheetPortsFromFile(filePath)))
+          }}
+          title={isRoot ? 'Root schematic — click to open or drag into a parent board as a sheet block' : 'Click to open or drag onto the canvas as a sheet block'}
+        >
+          {isRoot ? '🏠 ' : depth > 0 ? '↳ ' : '📄 '}
+          {displayName}
+        </div>
+        {children.map(child => renderSchematicNode(child, depth + 1, nextSeen))}
+      </div>
+    )
   }
 
   const createNewSymbolFile = () => {
@@ -246,6 +328,33 @@ function App() {
                 onFileMove={moveFile}
                 activeFilePath={activeFilePath}
               />
+            )}
+
+            {/* SCHEMATICS */}
+            {leftPanelTab === 'schematics' && (
+              <div style={{ padding: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ color: '#ccc', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>
+                    Schematic Hierarchy
+                  </div>
+                  <button
+                    style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
+                    onClick={createNewSchematicFile}
+                  >+ New</button>
+                </div>
+                {schematicEntries.length === 0 ? (
+                  <div style={{ color: '#666', fontSize: 12 }}>No schematic entry files found.</div>
+                ) : (
+                  <>
+                    {(importedProject.rootFile
+                      ? [importedProject.rootFile, ...schematicEntries.map(entry => entry.path).filter(path => path !== importedProject.rootFile && !childSheetPaths.has(path))]
+                      : schematicEntries.map(entry => entry.path)
+                    )
+                      .filter((path, index, arr) => arr.indexOf(path) === index)
+                      .map(path => renderSchematicNode(path))}
+                  </>
+                )}
+              </div>
             )}
 
             {/* COMPONENTS */}

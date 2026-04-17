@@ -10,9 +10,29 @@ export type DetectedFileKind = 'schematic' | 'subcircuit' | 'symbol' | 'unknown'
 export const detectFileKind = (code: string): DetectedFileKind => {
   const trimmed = code.trim()
   if (!trimmed) return 'unknown'
-  if (/<board\b[\s>]/.test(trimmed)) return 'schematic'
-  if (/<subcircuit\b[\s>]/.test(trimmed)) return 'subcircuit'
-  if (/<symbol\b[\s>]/.test(trimmed)) return 'symbol'
+
+  const hasBoard = /<board\b[\s>]/.test(trimmed)
+  const hasSubcircuit = /<subcircuit\b[\s>]/.test(trimmed)
+  const hasSymbol = /<symbol\b[\s>]/.test(trimmed)
+
+  if (hasBoard || /export\s+default[\s\S]*<board\b/i.test(trimmed)) return 'schematic'
+  if (hasSubcircuit) return 'subcircuit'
+  if (hasSymbol) return 'symbol'
+  return 'unknown'
+}
+
+export const inferDetectedFileKind = (filePath: string, code: string): DetectedFileKind => {
+  const structuralKind = detectFileKind(code)
+  if (structuralKind !== 'unknown') return structuralKind
+
+  const normalizedPath = filePath.replace(/^\/+/, '')
+  if (!normalizedPath.endsWith('.tsx')) return 'unknown'
+
+  if (normalizedPath.startsWith('symbols/')) return 'symbol'
+  if (normalizedPath.startsWith('subcircuits/')) return 'subcircuit'
+  if (normalizedPath === 'main.tsx' || normalizedPath.startsWith('schematics/')) return 'schematic'
+  if (/\bexport\s+default\b/.test(code)) return 'schematic'
+
   return 'unknown'
 }
 

@@ -74,6 +74,11 @@ export const Canvas: React.FC = () => {
       const rows = Math.max(1, Math.ceil(portCount / 2))
       return { width: 130, height: Math.max(46, 28 + rows * 18) }
     }
+    if (component.catalogId === 'sheet-instance') {
+      const portCount = ((component.props.ports as string[] | undefined) || []).length
+      const rows = Math.max(1, Math.ceil(portCount / 2))
+      return { width: 150, height: Math.max(52, 34 + rows * 18) }
+    }
     if (component.catalogId === 'symbol-instance') {
       return { width: 120, height: 56 }
     }
@@ -102,8 +107,9 @@ export const Canvas: React.FC = () => {
       return [{ name: 'port', x: 0, y: 11 }]
     }
 
-    if (component.catalogId === 'subcircuit-instance') {
+    if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
       const ports = (component.props.ports as string[] | undefined) || []
+      const width = component.catalogId === 'sheet-instance' ? 150 : 130
       if (ports.length === 0) {
         return [{ name: 'IO', x: 0, y: 20 }]
       }
@@ -112,7 +118,7 @@ export const Canvas: React.FC = () => {
         const isLeft = index % 2 === 0
         return {
           name: portName,
-          x: isLeft ? 0 : 130,
+          x: isLeft ? 0 : width,
           y: 18 + row * 18
         }
       })
@@ -303,6 +309,9 @@ export const Canvas: React.FC = () => {
     const catalogItemId = e.dataTransfer.getData('catalogItemId')
     const subcircuitName = e.dataTransfer.getData('subcircuitName')
     const subcircuitPath = e.dataTransfer.getData('subcircuitPath')
+    const sheetName = e.dataTransfer.getData('sheetName')
+    const sheetPath = e.dataTransfer.getData('sheetPath')
+    const sheetPorts = e.dataTransfer.getData('sheetPorts')
     const symbolName = e.dataTransfer.getData('symbolName')
     
     if (!canvasRef.current) return
@@ -317,6 +326,32 @@ export const Canvas: React.FC = () => {
         schX: x,
         schY: y,
         filePath: subcircuitPath || undefined
+      })
+      return
+    }
+
+    if (sheetPath) {
+      const existingNames = placedComponents.map(c => c.name)
+      let i = 1
+      const baseName = sheetName || sheetPath.split('/').pop()?.replace(/\.(tsx|ts)$/, '') || 'Sheet'
+      let uniqueName = baseName
+      while (existingNames.includes(uniqueName)) {
+        i += 1
+        uniqueName = `${baseName}${i}`
+      }
+
+      addPlacedComponent({
+        id: `sheet-${Date.now()}-${Math.random()}`,
+        catalogId: 'sheet-instance',
+        name: uniqueName,
+        props: {
+          sheetName: uniqueName,
+          sheetPath,
+          ports: sheetPorts ? JSON.parse(sheetPorts) : [],
+          schX: x,
+          schY: y
+        },
+        tsxSnippet: ''
       })
       return
     }
@@ -718,11 +753,12 @@ export const Canvas: React.FC = () => {
             const rotation = normalizeRotation(component.props.schRotation)
             const isSelected = selectedComponentIds.includes(component.id)
             const isSubcircuit = component.catalogId === 'subcircuit-instance'
+            const isSheetInstance = component.catalogId === 'sheet-instance'
             const isSymbolInstance = component.catalogId === 'symbol-instance'
             const isNetPort = component.catalogId === 'netport'
             const isNet = component.catalogId === 'net'
 
-            if (!isSubcircuit && !isSymbolInstance && !isNetPort && !getCatalogItem(component.catalogId)) {
+            if (!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !getCatalogItem(component.catalogId)) {
               return null
             }
             
@@ -737,6 +773,8 @@ export const Canvas: React.FC = () => {
                   height,
                   background: isNetPort
                     ? 'rgba(156, 39, 176, 0.15)'
+                    : isSheetInstance
+                    ? 'rgba(76, 175, 80, 0.12)'
                     : isSubcircuit
                     ? 'rgba(255, 152, 0, 0.12)'
                     : isSymbolInstance
@@ -748,6 +786,8 @@ export const Canvas: React.FC = () => {
                     ? '1px dashed rgba(156, 39, 176, 0.7)'
                     : isNet
                     ? 'none'
+                    : isSheetInstance
+                    ? '2px dashed rgba(76, 175, 80, 0.6)'
                     : isSubcircuit
                     ? '2px dashed rgba(255, 152, 0, 0.55)'
                     : isSymbolInstance
@@ -755,12 +795,15 @@ export const Canvas: React.FC = () => {
                     : '1px solid #3e3e3e',
                   cursor: cursorNearPin?.componentId === component.id ? 'crosshair' : 'move',
                   boxShadow: isSelected ? '0 0 0 2px rgba(0, 122, 204, 0.3)' : 'none',
-                  borderRadius: isSubcircuit || isNetPort ? '4px' : '0'
+                  borderRadius: isSubcircuit || isSheetInstance || isNetPort ? '4px' : '0'
                 }}
                 onMouseDown={(e) => handleComponentMouseDown(e, component.id)}
                 onDoubleClick={() => {
                   if (isSubcircuit && component.props.subcircuitName) {
                     openSubcircuitEditor(component.props.subcircuitName)
+                  }
+                  if (isSheetInstance && component.props.sheetPath) {
+                    setActiveFilePath(component.props.sheetPath)
                   }
                   if (isSymbolInstance && component.props.symbolName) {
                     setActiveFilePath(`symbols/${component.props.symbolName}.tsx`)
@@ -777,6 +820,8 @@ export const Canvas: React.FC = () => {
                     ? '#007acc'
                     : isNetPort
                     ? '#ce93d8'
+                    : isSheetInstance
+                    ? '#81c784'
                     : isSubcircuit
                     ? '#ff9800'
                     : isSymbolInstance
@@ -787,12 +832,29 @@ export const Canvas: React.FC = () => {
                 }}>
                   {!isNet && (
                     <>
-                  {isSubcircuit ? '📦 ' : isNetPort ? '🔌 ' : ''}{component.name}
+                  {isSheetInstance ? '🗂 ' : isSubcircuit ? '📦 ' : isNetPort ? '🔌 ' : ''}{component.name}
                   {component.props.resistance && ` (${component.props.resistance})`}
                   {component.props.capacitance && ` (${component.props.capacitance})`}
                     </>
                   )}
                 </div>
+
+                {isSheetInstance && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: '50%',
+                    transform: `translate(-50%, -50%) rotate(${rotation}deg)`,
+                    fontSize: 13,
+                    color: '#66bb6a',
+                    fontWeight: 600,
+                    pointerEvents: 'none',
+                    textAlign: 'center',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    {component.props.sheetName || component.name}
+                  </div>
+                )}
 
                 {isSubcircuit && (
                   <div style={{
@@ -843,7 +905,7 @@ export const Canvas: React.FC = () => {
                   </div>
                 )}
 
-                {!isSubcircuit && !isSymbolInstance && !isNetPort && (
+                {!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && (
                   <div
                     style={{
                       width: baseSize.width,

@@ -298,6 +298,24 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   }
   assert(didRejectBrokenImport, 'validateImports should reject missing relative imports')
 
+  const multiEntryFsMap = createDefaultWorkspaceFsMap('Multi Entry WS')
+  multiEntryFsMap['schematics/PageA.tsx'] = `export default () => <board><chip name="U_A" pinCount={8} /></board>`
+  multiEntryFsMap['schematics/PageB.tsx'] = `import PageBBody from "./PageBBody"\n\nexport default PageBBody`
+  multiEntryFsMap['schematics/PageBBody.tsx'] = `export default () => <board><chip name="U_B" pinCount={8} /></board>`
+  const multiEntryProject = buildImportedProjectState(multiEntryFsMap)
+  assert(multiEntryProject.entryFiles.includes('schematics/PageA.tsx'), 'direct board page should be included in entryFiles')
+  assert(multiEntryProject.entryFiles.includes('schematics/PageB.tsx'), 'default-export wrapper page should be included in entryFiles')
+
+  const hierarchyFsMap = createDefaultWorkspaceFsMap('Hierarchy WS')
+  hierarchyFsMap['schematics/main.tsx'] = `export default () => (\n  <board>\n    <sheet name="Power" src="./power.tsx" />\n  </board>\n)`
+  hierarchyFsMap['schematics/power.tsx'] = `export default () => (\n  <board>\n    <net name="VCC" />\n    <net name="GND" />\n  </board>\n)`
+  const hierarchyProject = buildImportedProjectState(hierarchyFsMap) as any
+  const hierarchyParsed = minimalImportExportTestUtils.parseImportedTSXToCanvas(hierarchyFsMap['schematics/main.tsx'], 'schematics/main.tsx')
+  assert(hierarchyProject.rootFile === 'schematics/main.tsx', 'main.tsx should be selected as the root schematic')
+  assert((hierarchyProject.hierarchy?.['schematics/main.tsx'] || []).includes('schematics/power.tsx'), 'sheet references should build a parent-child hierarchy')
+  assert(hierarchyProject.dependencyGraph['schematics/main.tsx']?.imports.includes('schematics/power.tsx'), 'sheet references should participate in the dependency graph')
+  assert(hierarchyParsed.components.some(c => c.catalogId === 'sheet-instance' && c.props.sheetPath === 'schematics/power.tsx'), 'sheet references should render as sheet blocks on the parent canvas')
+
   // 4) Export workspace JSON
   const exported: WorkspaceExport = exportWorkspaceJson(originalWorkspace.name, originalWorkspace.fsMap)
   const payload = JSON.stringify(exported, null, 2)
@@ -333,17 +351,21 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
 
   // Imported registries should discover linked project content.
   importedWorkspace.fsMap['subcircuits/NamedBlock.tsx'] = `export const ports = ["IN", "OUT"] as const\n\nexport function DebounceBlock(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n      <resistor name="R_db" resistance="10k" />\n    </subcircuit>\n  )\n}\n`
+  importedWorkspace.fsMap['subcircuits/TaggedPorts.tsx'] = `export function TaggedPorts(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n      <port name="VIN" />\n      <port name="VOUT" />\n      <port name="GND" />\n    </subcircuit>\n  )\n}\n`
   importedWorkspace.fsMap['subcircuits/InvalidDefault.tsx'] = `export default () => (\n  <subcircuit>\n    <resistor name="R_bad" resistance="1k" />\n  </subcircuit>\n)`
 
   const importedSubcircuits = extractAllSubcircuits(importedWorkspace.fsMap)
   const importedSymbols = extractAllSymbols(importedWorkspace.fsMap)
   const importedEFR = importedSubcircuits.find(s => s.name === 'EFR_t1')
   const importedDebounce = importedSubcircuits.find(s => s.name === 'DebounceBlock')
+  const importedTaggedPorts = importedSubcircuits.find(s => s.name === 'TaggedPorts')
   assert(!!importedEFR, 'subcircuit registry missing imported EFR_t1')
   assert((importedEFR?.ports || []).includes('VIN'), 'subcircuit registry missing VIN port')
   assert((importedEFR?.ports || []).includes('VOUT'), 'subcircuit registry missing VOUT port')
   assert(!!importedDebounce, 'subcircuit registry should use the named exported component for composition')
   assert(importedDebounce?.filePath === 'subcircuits/NamedBlock.tsx', 'subcircuit registry should preserve the real source file path')
+  assert((importedTaggedPorts?.ports || []).length === 3, 'subcircuit registry should preserve multiple public ports from explicit <port /> tags')
+  assert((importedTaggedPorts?.ports || []).includes('VIN') && (importedTaggedPorts?.ports || []).includes('VOUT') && (importedTaggedPorts?.ports || []).includes('GND'), 'tagged public ports should remain visible in the registry')
   assert(!importedSubcircuits.some(s => s.filePath === 'subcircuits/InvalidDefault.tsx'), 'default-export anonymous subcircuits should be rejected from the registry')
   assert(importedSymbols.some(s => s.name === 'TestSymbol'), 'symbol registry missing imported TestSymbol')
 
@@ -600,6 +622,39 @@ export function Debounce_led(props: { name: string }) {
   const deleteGuardState = useEditorStore.getState()
   assert(!!deleteGuardState.fsMap['subcircuits/Deb_button_test2.tsx'], 'safe delete should prevent removing a file that is still used by a schematic')
 
+  // Public-port selection should expose all real pins on selected components, not only one boundary signal.
+  useEditorStore.getState().createWorkspace('Public Port WS')
+  const portFsMap = createDefaultWorkspaceFsMap('Public Port WS')
+  portFsMap['schematics/main.tsx'] = `export default () => (
+  <board width="50mm" height="50mm">
+    {/* // schX={120} */}
+    {/* // schY={120} */}
+    <resistor name="R_PORT" resistance="1k" schRotation="0deg" />
+
+    {/* // schX={220} */}
+    {/* // schY={120} */}
+    <capacitor name="C_PORT" capacitance="1uF" schRotation="0deg" />
+
+    {/* // schX={40} */}
+    {/* // schY={120} */}
+    <net name="SIGNAL" schRotation="0deg" />
+
+    <trace from="net.SIGNAL" to=".R_PORT > .pin1" />
+    <trace from=".R_PORT > .pin2" to=".C_PORT > .pin1" />
+  </board>
+)`
+  useEditorStore.getState().setFSMap(portFsMap)
+  useEditorStore.getState().setActiveFilePath('schematics/main.tsx')
+  const portSelectionState = useEditorStore.getState()
+  const portComponentIds = portSelectionState.placedComponents
+    .filter(component => component.name === 'R_PORT' || component.name === 'C_PORT')
+    .map(component => component.id)
+  useEditorStore.getState().beginSubcircuitPinSelection(portComponentIds)
+  const candidatePins = useEditorStore.getState().subcircuitCreation.candidatePins
+  assert(candidatePins.length >= 3, 'subcircuit public-port selection should include multiple pins from the selected components')
+  assert(candidatePins.some(pin => pin.pinName === 'pin2'), 'non-boundary component pins should still be exposable as public ports')
+  useEditorStore.getState().cancelSubcircuitPinSelection()
+
   // Cross-workspace availability: a created subcircuit must persist in workspace model.
   useEditorStore.getState().createWorkspace('WS Persist A')
   const wsPersistA = useEditorStore.getState().activeWorkspaceId
@@ -617,6 +672,7 @@ export function Debounce_led(props: { name: string }) {
 
   const afterCreateState = useEditorStore.getState()
   assert(!!afterCreateState.workspaces[wsPersistA].fsMap['subcircuits/PersistedBlock.tsx'], 'created subcircuit not persisted into workspace fsMap')
+  assert(afterCreateState.workspaces[wsPersistA].fsMap['subcircuits/PersistedBlock.tsx'].includes('export const ports = ["IN", "OUT"] as const'), 'created subcircuit should preserve multiple public ports in file output')
 
   useEditorStore.getState().createWorkspace('WS Persist B')
   const wsPersistB = useEditorStore.getState().activeWorkspaceId

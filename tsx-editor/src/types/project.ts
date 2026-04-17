@@ -14,6 +14,7 @@ export interface ImportedProjectFile {
   kind: 'schematic' | 'symbol' | 'subcircuit' | 'unknown'
   exports: string[]
   imports: string[]
+  sheets: string[]
 }
 
 export interface DependencyGraphNode {
@@ -29,6 +30,8 @@ export interface ImportedProjectState {
   files: Record<string, ImportedProjectFile>
   registry: Record<string, string>
   entryFiles: string[]
+  rootFile: string | null
+  hierarchy: Record<string, string[]>
   dependencyGraph: DependencyGraph
   componentUsage: ComponentUsageMap
 }
