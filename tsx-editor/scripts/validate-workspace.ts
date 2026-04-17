@@ -1,173 +1,488 @@
 /**
- * validate-workspace.ts
+ * Step 2 workspace-level validation.
  *
- * Runs a battery of checks against the workspace model and roundtrip TSX functions.
- * Usage:  npx tsx scripts/validate-workspace.ts
- * Exit 0 on success, exit 1 if any check fails.
+ * Verifies full workspace import/export roundtrip:
+ * - folder/file presence: schematics/, symbols/, subcircuits/, editor/
+ * - nets preserved
+ * - ports preserved
+ * - editor metadata preserved
+ * - no crash while parsing schematic/subcircuit TSX
+ * - strict workspace equality after re-import
  */
 
+import {
+  createDefaultWorkspaceFsMap,
+  exportWorkspaceJson,
+  importWorkspaceJson,
+  type FsMap,
+  type WorkspaceExport
+} from '../src/store/workspaceFs'
 import { minimalImportExportTestUtils } from '../src/store/editorStore'
-import type { WorkspaceData } from '../src/types/workspace'
+import { useEditorStore } from '../src/store/editorStore'
+import { buildProjectFileTree } from '../src/utils/projectManager'
+import { extractAllSubcircuits, extractAllSymbols } from '../src/utils/projectManager'
+import { classifyFilePath } from '../src/utils/fileClassification'
 
-type FSMap = Record<string, string>
-
-let passed = 0
-let failed = 0
-
-function check(name: string, fn: () => void) {
-  try {
-    fn()
-    console.log(`  ✅  ${name}`)
-    passed++
-  } catch (e) {
-    console.error(`  ❌  ${name}`)
-    console.error(`       ${(e as Error).message}`)
-    failed++
-  }
+interface WorkspaceState {
+  id: string
+  name: string
+  fsMap: FsMap
+  activeFilePath: string
 }
 
-function assert(condition: boolean, message: string) {
+const SCHEMATIC_MAIN = 'schematics/main.tsx'
+
+function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+function stableObject<T extends Record<string, any>>(obj: T): T {
+  const out: Record<string, any> = {}
+  Object.keys(obj).sort().forEach((k) => {
+    const value = obj[k]
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      out[k] = stableObject(value)
+    } else if (Array.isArray(value)) {
+      out[k] = value.map((v) => (v && typeof v === 'object' ? stableObject(v) : v))
+    } else {
+      out[k] = value
+    }
+  })
+  return out as T
+}
 
-const DEFAULT_MAIN_TSX = `export default () => (
+function workspacesEqual(a: WorkspaceState, b: WorkspaceState): boolean {
+  const left = stableObject({
+    name: a.name,
+    activeFilePath: a.activeFilePath,
+    fsMap: a.fsMap
+  })
+  const right = stableObject({
+    name: b.name,
+    activeFilePath: b.activeFilePath,
+    fsMap: b.fsMap
+  })
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function run(): void {
+  console.log('\n🔍 validate-workspace.ts (Step 2 + Step 3A)\n')
+
+  // 1) Create a test workspace
+  const fsMap = createDefaultWorkspaceFsMap('test1')
+
+  // 2) Add exactly one schematic, one symbol, one subcircuit
+  fsMap[SCHEMATIC_MAIN] = `import { EFR_t1 } from "../subcircuits/EFR_t1"
+
+export default () => (
   <board width="50mm" height="50mm">
-    {/* Add components here */}
-  </board>
-)
-`
+    {/* // schX={120} */}
+    {/* // schY={120} */}
+    <chip name="U1" pinCount={8} schRotation="0deg" />
 
-function makeWorkspace(name: string, fsMap: FSMap = {}): WorkspaceData {
-  return {
-    id: `ws-${name.toLowerCase().replace(/\s+/g, '-')}`,
-    name,
-    fsMap: { 'main.tsx': DEFAULT_MAIN_TSX, ...fsMap },
-    openFilePaths: ['main.tsx'],
-    activeFilePath: 'main.tsx'
-  }
-}
+    {/* // schX={60} */}
+    {/* // schY={80} */}
+    <net name="VIN" schRotation="0deg" />
 
-function serializeWorkspace(ws: WorkspaceData): string {
-  return JSON.stringify(ws, null, 2)
-}
+    {/* // schX={220} */}
+    {/* // schY={80} */}
+    <net name="VOUT" schRotation="0deg" />
 
-function deserializeWorkspace(json: string): WorkspaceData {
-  const parsed = JSON.parse(json)
-  if (!parsed.id || !parsed.name || typeof parsed.fsMap !== 'object') {
-    throw new Error('Invalid workspace JSON: missing required fields')
-  }
-  return parsed as WorkspaceData
-}
-
-// ── tests ─────────────────────────────────────────────────────────────────────
-
-console.log('\n🔍  validate-workspace.ts\n')
-
-check('WorkspaceData can be created with defaults', () => {
-  const ws = makeWorkspace('Test Project')
-  assert(ws.id === 'ws-test-project', `expected id 'ws-test-project', got '${ws.id}'`)
-  assert(ws.name === 'Test Project', 'name mismatch')
-  assert(typeof ws.fsMap === 'object', 'fsMap must be object')
-  assert(ws.fsMap['main.tsx'] === DEFAULT_MAIN_TSX, 'main.tsx should equal default')
-  assert(ws.openFilePaths.includes('main.tsx'), 'openFilePaths should contain main.tsx')
-  assert(ws.activeFilePath === 'main.tsx', 'activeFilePath should be main.tsx')
-})
-
-check('WorkspaceData serializes and deserializes cleanly', () => {
-  const ws = makeWorkspace('Roundtrip Test', { 'main.tsx': DEFAULT_MAIN_TSX })
-  const json = serializeWorkspace(ws)
-  const parsed = deserializeWorkspace(json)
-  assert(parsed.id === ws.id, 'id round-trip failed')
-  assert(parsed.name === ws.name, 'name round-trip failed')
-  assert(parsed.fsMap['main.tsx'] === ws.fsMap['main.tsx'], 'fsMap round-trip failed')
-})
-
-check('TSX with a chip component imports and exports cleanly', () => {
-  const inputTSX = `export default () => (
-  <board width="50mm" height="50mm">
-    {/* // schX={200} */}
+    {/* // schX={180} */}
     {/* // schY={200} */}
-    <chip
-      name="U1"
-      pinCount={8}
-      footprint="soic8"
-      schRotation="0deg"
-    />
+    <EFR_t1 name="X1" schRotation="0deg" />
+
+    <trace from=".U1 > .pin1" to="net.VIN" />
+    <trace from=".U1 > .pin8" to="net.VOUT" />
+    <trace from=".X1 > .VIN" to="net.VIN" />
+    <trace from=".X1 > .VOUT" to="net.VOUT" />
   </board>
 )
 `
-  const { components } = minimalImportExportTestUtils.parseImportedTSXToCanvas(inputTSX, 'main.tsx')
-  assert(components.some(c => c.name === 'U1'), 'U1 chip should be parsed')
 
-  const round = minimalImportExportTestUtils.exportCanvasToTSX('main.tsx', components, [])
-  assert(round.includes('<chip'), 'exported TSX should include <chip')
-  assert(round.includes('name="U1"'), 'exported TSX should include name="U1"')
-})
+  fsMap['symbols/TestSymbol.tsx'] = `export const TestSymbol = () => (
+  <symbol>
+    <line x1="-5" y1="0" x2="5" y2="0" stroke="black" />
+  </symbol>
+)
+`
 
-check('Workspace with a subcircuit file parses without crashing', () => {
-  const subcircuitTSX = `export const ports = ["IN", "OUT"] as const
+  fsMap['subcircuits/EFR_t1.tsx'] = `export const ports = ["VIN", "VOUT"] as const
 
-export function MyFilter(props: { name: string; schX?: number; schY?: number }) {
+export function EFR_t1(props: { name: string; schX?: number; schY?: number }) {
   const x = props.schX ?? 0
   const y = props.schY ?? 0
   return (
     <subcircuit name={props.name}>
       {/* // schX={x + 100} */}
       {/* // schY={y + 100} */}
-      <resistor
-        name="R1"
-        resistance="1k"
-        schRotation="0deg"
-      />
+      <resistor name="R1" resistance="1k" schRotation="0deg" />
+
+      <trace from=".R1 > .pin1" to="net.VIN" />
+      <trace from=".R1 > .pin2" to="net.VOUT" />
     </subcircuit>
   )
 }
 `
-  const fsMap: FSMap = {
-    'main.tsx': DEFAULT_MAIN_TSX,
-    'subcircuits/MyFilter.tsx': subcircuitTSX
+
+  fsMap['editor/meta.json'] = JSON.stringify(
+    {
+      netAnchors: {
+        [SCHEMATIC_MAIN]: {
+          VIN: { schX: 60, schY: 80 },
+          VOUT: { schX: 220, schY: 80 }
+        }
+      },
+      layout: {
+        lastViewport: { x: 0, y: 0, zoom: 1 }
+      }
+    },
+    null,
+    2
+  )
+
+  const originalWorkspace: WorkspaceState = {
+    id: 'test1',
+    name: 'test1',
+    fsMap,
+    activeFilePath: SCHEMATIC_MAIN
   }
-  const ws = makeWorkspace('Subcircuit Test', fsMap)
-  assert('subcircuits/MyFilter.tsx' in ws.fsMap, 'subcircuit should be in fsMap')
 
-  const { components } = minimalImportExportTestUtils.parseImportedTSXToCanvas(subcircuitTSX, 'subcircuits/MyFilter.tsx')
-  assert(components.some(c => c.name === 'R1'), 'R1 should be parsed inside subcircuit')
-})
+  // 3) Simulate placing/components + connecting nets by parsing files (no crash expected)
+  const parsedMain = minimalImportExportTestUtils.parseImportedTSXToCanvas(fsMap[SCHEMATIC_MAIN], SCHEMATIC_MAIN)
+  const parsedSub = minimalImportExportTestUtils.parseImportedTSXToCanvas(fsMap['subcircuits/EFR_t1.tsx'], 'subcircuits/EFR_t1.tsx')
+  assert(parsedMain.components.length > 0, 'main schematic parse should produce components')
+  assert(parsedMain.wires.length > 0, 'main schematic parse should produce wires')
+  assert(parsedSub.components.some(c => c.name === 'R1'), 'subcircuit parse should include R1')
 
-check('Multi-workspace store: switching adds new workspace without losing old one', () => {
-  const ws1 = makeWorkspace('Project Alpha')
-  const ws2 = makeWorkspace('Project Beta', { 'main.tsx': `export default () => (<board width="10mm" height="10mm" />)\n` })
+  // Standalone single-file imports should normalize safely.
+  const standaloneSubcircuitFile = `import React from "react"
 
-  const workspaces: Record<string, WorkspaceData> = {
-    [ws1.id]: ws1,
-    [ws2.id]: ws2
+export default function ImportedThing(props: { name: string; schX?: number; schY?: number }) {
+  return (
+    <subcircuit name={props.name}>
+      <resistor name="R_single" resistance="10k" />
+    </subcircuit>
+  )
+}`
+  const normalizedMainImport = minimalImportExportTestUtils.normalizeImportedTSXContent(standaloneSubcircuitFile, SCHEMATIC_MAIN)
+  const normalizedSubImport = minimalImportExportTestUtils.normalizeImportedTSXContent(standaloneSubcircuitFile, 'subcircuits/SingleImport.tsx')
+  assert(normalizedMainImport.includes('<board'), 'single-file TSX import into main should stay a board schematic')
+  assert(!normalizedMainImport.includes('export default function ImportedThing'), 'single-file TSX import should not overwrite main with standalone component source')
+  assert(normalizedSubImport.includes('export function SingleImport'), 'single-file TSX import should be renamed to match the target file name')
+
+
+  // Regression: canonical advanced IC schematic import should normalize safely.
+  const advancedChipSchematic = `export default () => (
+  <board width="50mm" height="50mm">
+    {/* Duplicate net symbols for DVDD collapsed (5 visual instances -> 1 logical <net />) */}
+    {/* Duplicate net symbols for GND collapsed (4 visual instances -> 1 logical <net />) */}
+
+    <chip
+      name="U1"
+      schX={28.9}
+      schY={4.7}
+      schRotation="0deg"
+      footprint="soic14"
+      pinLabels={{
+        pin1: "RESETN",
+        pin2: "BODEN",
+        pin3: "VREGVDD",
+        pin4: "AVDD",
+        pin5: "IOVDD1",
+        pin6: "IOVDD2",
+        pin7: "IOVDD3",
+        pin8: "IOVDD4",
+        pin9: "VREGSW1",
+        pin10: "DVDD1",
+        pin11: "DECOUPLE",
+        pin12: "VREGVSS1",
+        pin13: "VREGVSS2",
+        pin14: "VREGVSS3",
+      }}
+      schPinArrangement={{
+        leftSide: {
+          direction: "top-to-bottom",
+          pins: ["pin1", "pin2", "pin3", "pin4", "pin5", "pin6", "pin7"],
+        },
+        rightSide: {
+          direction: "bottom-to-top",
+          pins: ["pin8", "pin9", "pin10", "pin11", "pin12", "pin13", "pin14"],
+        },
+      }}
+      pinAttributes={{
+        pin3: { requiresPower: true },
+        pin4: { requiresPower: true },
+        pin5: { requiresPower: true },
+        pin6: { requiresPower: true },
+        pin7: { requiresPower: true },
+        pin8: { requiresPower: true },
+        pin10: { requiresPower: true },
+        pin12: { requiresGround: true },
+        pin13: { requiresGround: true },
+        pin14: { requiresGround: true },
+      }}
+    />
+
+    <net name="RESETN" schX={4.2} schY={5.6} schRotation="0deg" />
+    <net name="DVDD" schX={4} schY={8.3} schRotation="0deg" />
+    <net name="GND" schX={3.9} schY={12.1} schRotation="0deg" />
+    <resistor name="R1" schX={7.6} schY={6.6} schRotation="0deg" resistance="10k" footprint="0805" />
+    <capacitor name="C7" schX={38.3} schY={12.1} schRotation="0deg" capacitance="100nF" footprint="0805" />
+    <capacitor name="C8" schX={43.6} schY={12.2} schRotation="0deg" capacitance="100nF" footprint="0805" />
+
+    <trace from="net.RESETN" to=".U1 > .pin1" />
+    <trace from=".R1 > .pin2" to=".U1 > .pin2" />
+    <trace from="net.DVDD" to=".R1 > .pin1" />
+    <trace from=".U1 > .pin12" to="net.GND" />
+    <trace from=".C7 > .pin1" to=".U1 > .pin11" />
+    <trace from="net.DVDD" to=".U1 > .pin10" />
+    <trace from=".C8 > .pin1" to="net.DVDD" />
+  </board>
+)`
+
+  const normalizedAdvancedImport = minimalImportExportTestUtils.normalizeImportedTSXContent(
+    advancedChipSchematic,
+    SCHEMATIC_MAIN
+  )
+  const advancedParsed = minimalImportExportTestUtils.parseImportedTSXToCanvas(
+    normalizedAdvancedImport,
+    SCHEMATIC_MAIN
+  )
+
+  assert(advancedParsed.components.some(c => c.name === 'U1'), 'advanced IC schematic should parse U1')
+  assert(advancedParsed.wires.length >= 7, 'advanced IC schematic should preserve numbered pin traces')
+  assert(normalizedAdvancedImport.includes('schX={28.9}'), 'advanced IC schematic should preserve real schX props')
+  assert(normalizedAdvancedImport.includes('schY={4.7}'), 'advanced IC schematic should preserve real schY props')
+  assert(normalizedAdvancedImport.includes('pinLabels={{'), 'advanced IC schematic should preserve explicit pinLabels')
+  assert(normalizedAdvancedImport.includes('schPinArrangement={{'), 'advanced IC schematic should preserve explicit schPinArrangement')
+  assert(normalizedAdvancedImport.includes('pinAttributes={{'), 'advanced IC schematic should preserve explicit pinAttributes')
+  assert(!normalizedAdvancedImport.includes('symbolPreset="npn-bce-template"'), 'wrong transistor preset should not appear')
+  assert(!normalizedAdvancedImport.includes('footprint="soic8"'), 'mismatched SOIC-8 footprint should not appear')
+// ...existing code...
+
+
+  // 4) Export workspace JSON
+  const exported: WorkspaceExport = exportWorkspaceJson(originalWorkspace.name, originalWorkspace.fsMap)
+  const payload = JSON.stringify(exported, null, 2)
+
+  // 5) Re-import workspace JSON
+  const imported = importWorkspaceJson(payload)
+  const importedWorkspace: WorkspaceState = {
+    id: 'import1',
+    name: imported.name,
+    fsMap: imported.files,
+    activeFilePath: SCHEMATIC_MAIN
   }
 
-  assert(Object.keys(workspaces).length === 2, 'should have 2 workspaces')
-  assert(workspaces[ws1.id].name === 'Project Alpha', 'ws1 name preserved')
-  assert(workspaces[ws2.id].name === 'Project Beta', 'ws2 name preserved')
-  assert(workspaces[ws2.id].fsMap['main.tsx'] !== DEFAULT_MAIN_TSX, 'ws2 has distinct main.tsx')
-})
+  // 6) Compare full workspace
+  assert(workspacesEqual(originalWorkspace, importedWorkspace), 'workspacesEqual(original, imported) failed')
 
-check('ExportWorkspaceJSON includes all fsMap keys', () => {
-  const fsMap: FSMap = {
-    'main.tsx': DEFAULT_MAIN_TSX,
-    'subcircuits/BigBoard.tsx': '// stub',
-    'editor/meta.json': JSON.stringify({ netAnchors: {} })
-  }
-  const ws = makeWorkspace('Full Export Test', fsMap)
-  const json = serializeWorkspace(ws)
-  const back = deserializeWorkspace(json)
-  assert('subcircuits/BigBoard.tsx' in back.fsMap, 'subcircuit should survive round-trip')
-  assert('editor/meta.json' in back.fsMap, 'meta.json should survive round-trip')
-})
+  // Mandatory checks
+  assert(importedWorkspace.fsMap[SCHEMATIC_MAIN] != null, 'missing schematics/main.tsx')
+  assert(importedWorkspace.fsMap['project.json'] != null, 'missing project.json')
+  assert(importedWorkspace.fsMap['symbols/index.ts'] != null, 'missing symbols/index.ts')
+  assert(importedWorkspace.fsMap['symbols/TestSymbol.tsx'] != null, 'missing symbol file')
+  assert(importedWorkspace.fsMap['subcircuits/index.ts'] != null, 'missing subcircuits/index.ts')
+  assert(importedWorkspace.fsMap['subcircuits/EFR_t1.tsx'] != null, 'missing subcircuit file')
+  assert(importedWorkspace.fsMap['editor/meta.json'] != null, 'missing editor/meta.json')
 
-// ── summary ───────────────────────────────────────────────────────────────────
+  // Nets preserved
+  assert(importedWorkspace.fsMap[SCHEMATIC_MAIN].includes('net.VIN'), 'VIN net not preserved')
+  assert(importedWorkspace.fsMap[SCHEMATIC_MAIN].includes('net.VOUT'), 'VOUT net not preserved')
 
-console.log(`\n  ${passed + failed} checks — ${passed} passed, ${failed} failed\n`)
+  // Ports preserved
+  assert(importedWorkspace.fsMap['subcircuits/EFR_t1.tsx'].includes('"VIN"'), 'VIN port not preserved')
+  assert(importedWorkspace.fsMap['subcircuits/EFR_t1.tsx'].includes('"VOUT"'), 'VOUT port not preserved')
 
-if (failed > 0) {
-  process.exit(1)
+  // Imported registries should discover linked project content.
+  const importedSubcircuits = extractAllSubcircuits(importedWorkspace.fsMap)
+  const importedSymbols = extractAllSymbols(importedWorkspace.fsMap)
+  const importedEFR = importedSubcircuits.find(s => s.name === 'EFR_t1')
+  assert(!!importedEFR, 'subcircuit registry missing imported EFR_t1')
+  assert((importedEFR?.ports || []).includes('VIN'), 'subcircuit registry missing VIN port')
+  assert((importedEFR?.ports || []).includes('VOUT'), 'subcircuit registry missing VOUT port')
+  assert(importedSymbols.some(s => s.name === 'TestSymbol'), 'symbol registry missing imported TestSymbol')
+
+  // Metadata preserved
+  const originalMeta = JSON.parse(originalWorkspace.fsMap['editor/meta.json'])
+  const importedMeta = JSON.parse(importedWorkspace.fsMap['editor/meta.json'])
+  assert(JSON.stringify(stableObject(originalMeta)) === JSON.stringify(stableObject(importedMeta)), 'editor metadata not preserved')
+
+  // Step 3A checks: file tree should represent real workspace roots/files.
+  const fileTree = buildProjectFileTree(importedWorkspace.fsMap)
+  const rootChildren = fileTree.children || []
+  const rootFolderNames = rootChildren
+    .filter(node => node.type === 'folder')
+    .map(node => node.name)
+  const rootFileNames = rootChildren
+    .filter(node => node.type === 'file')
+    .map(node => node.name)
+
+  assert(rootFolderNames.includes('schematics'), 'file tree missing schematics/ folder')
+  assert(rootFolderNames.includes('subcircuits'), 'file tree missing subcircuits/ folder')
+  assert(rootFolderNames.includes('symbols'), 'file tree missing symbols/ folder')
+  assert(rootFolderNames.includes('editor'), 'file tree missing editor/ folder')
+  assert(rootFileNames.includes('project.json'), 'file tree missing project.json')
+
+  const editorFolder = rootChildren.find(node => node.type === 'folder' && node.name === 'editor')
+  const editorFiles = editorFolder?.children?.filter(node => node.type === 'file').map(node => node.name) || []
+  assert(editorFiles.includes('meta.json'), 'file tree missing editor/meta.json')
+
+  // Step 3A checks: active file/tab switching must stay scoped per workspace.
+  const state = useEditorStore.getState()
+  state.createWorkspace('Step3A WS A')
+  const wsA = useEditorStore.getState().activeWorkspaceId
+
+  const wsAFsMap = createDefaultWorkspaceFsMap('Step3A WS A')
+  wsAFsMap['subcircuits/BlockA.tsx'] = `export const ports = ["IN", "OUT"] as const\n\nexport function BlockA(props: { name: string; schX?: number; schY?: number }) {\n  return <subcircuit name={props.name}></subcircuit>\n}`
+  useEditorStore.getState().setFSMap(wsAFsMap)
+  useEditorStore.getState().setActiveFilePath('subcircuits/BlockA.tsx')
+
+  useEditorStore.getState().createWorkspace('Step3A WS B')
+  const wsB = useEditorStore.getState().activeWorkspaceId
+
+  const wsBFsMap = createDefaultWorkspaceFsMap('Step3A WS B')
+  wsBFsMap['symbols/IconB.tsx'] = `export const IconB = () => <symbol />`
+  useEditorStore.getState().setFSMap(wsBFsMap)
+  useEditorStore.getState().setActiveFilePath('symbols/IconB.tsx')
+
+  useEditorStore.getState().switchWorkspace(wsA)
+  const stateA = useEditorStore.getState()
+  assert(stateA.activeWorkspaceId === wsA, 'failed to switch back to workspace A')
+  assert(stateA.activeFilePath === 'subcircuits/BlockA.tsx', 'workspace A active file not restored')
+  assert(stateA.openFilePaths.includes('subcircuits/BlockA.tsx'), 'workspace A open tabs not restored')
+  assert(!stateA.openFilePaths.includes('symbols/IconB.tsx'), 'workspace A tabs leaked from workspace B')
+
+  useEditorStore.getState().switchWorkspace(wsB)
+  const stateB = useEditorStore.getState()
+  assert(stateB.activeWorkspaceId === wsB, 'failed to switch to workspace B')
+  assert(stateB.activeFilePath === 'symbols/IconB.tsx', 'workspace B active file not restored')
+  assert(stateB.openFilePaths.includes('symbols/IconB.tsx'), 'workspace B open tabs not restored')
+  assert(!stateB.openFilePaths.includes('subcircuits/BlockA.tsx'), 'workspace B tabs leaked from workspace A')
+
+  // Step 3A file-type classification and mode checks.
+  assert(classifyFilePath('schematics/main.tsx') === 'schematic-tsx', 'classification failed for schematics/*.tsx')
+  assert(classifyFilePath('subcircuits/EFR_t1.tsx') === 'subcircuit-tsx', 'classification failed for subcircuits/*.tsx')
+  assert(classifyFilePath('symbols/TestSymbol.tsx') === 'symbol-tsx', 'classification failed for symbols/*.tsx')
+  assert(classifyFilePath('subcircuits/index.ts') === 'source-ts', 'classification failed for *.ts')
+  assert(classifyFilePath('project.json') === 'json', 'classification failed for *.json')
+
+  const store = useEditorStore.getState()
+  const modeFsMap = createDefaultWorkspaceFsMap('Step3A File Modes')
+  modeFsMap['schematics/main.tsx'] = fsMap[SCHEMATIC_MAIN]
+  modeFsMap['editor/meta.json'] = JSON.stringify({ netAnchors: {}, layout: { title: 'meta' } }, null, 2)
+  modeFsMap['project.json'] = JSON.stringify({ name: 'Step3A File Modes', version: 1, type: 'workspace' }, null, 2)
+  modeFsMap['subcircuits/index.ts'] = 'export { EFR_t1 } from "./EFR_t1"\n'
+  modeFsMap['subcircuits/EFR_t1.tsx'] = fsMap['subcircuits/EFR_t1.tsx']
+  store.setFSMap(modeFsMap)
+
+  useEditorStore.getState().setActiveFilePath('schematics/main.tsx')
+  const schematicState = useEditorStore.getState()
+  assert(schematicState.placedComponents.length > 0, 'schematic file should activate canvas mode')
+
+  const projectJsonBefore = useEditorStore.getState().fsMap['project.json']
+  useEditorStore.getState().setActiveFilePath('project.json')
+  const projectJsonState = useEditorStore.getState()
+  assert(projectJsonState.placedComponents.length === 0, 'project.json should not populate canvas components')
+  assert(projectJsonState.wires.length === 0, 'project.json should not populate canvas wires')
+  useEditorStore.getState().regenerateTSX()
+  const projectJsonAfter = useEditorStore.getState().fsMap['project.json']
+  assert(projectJsonAfter === projectJsonBefore, 'project.json should not be rewritten as TSX')
+
+  const editorMetaBefore = useEditorStore.getState().fsMap['editor/meta.json']
+  useEditorStore.getState().setActiveFilePath('editor/meta.json')
+  const editorMetaState = useEditorStore.getState()
+  assert(editorMetaState.placedComponents.length === 0, 'editor/meta.json should not populate canvas components')
+  assert(editorMetaState.wires.length === 0, 'editor/meta.json should not populate canvas wires')
+  useEditorStore.getState().regenerateTSX()
+  const editorMetaAfter = useEditorStore.getState().fsMap['editor/meta.json']
+  assert(editorMetaAfter === editorMetaBefore, 'editor/meta.json should not be rewritten as TSX')
+
+  useEditorStore.getState().setActiveFilePath('subcircuits/index.ts')
+  const sourceState = useEditorStore.getState()
+  assert(sourceState.placedComponents.length === 0, 'subcircuits/index.ts should be source-only mode')
+  assert(sourceState.wires.length === 0, 'subcircuits/index.ts should be source-only mode')
+
+  // Import linkage + placement: imported registry items should be placeable and persisted in schematic TSX.
+  const linkFsMap = createDefaultWorkspaceFsMap('Step3A Import Linkage')
+  linkFsMap['schematics/main.tsx'] = importedWorkspace.fsMap['schematics/main.tsx']
+  linkFsMap['subcircuits/index.ts'] = importedWorkspace.fsMap['subcircuits/index.ts']
+  linkFsMap['subcircuits/EFR_t1.tsx'] = importedWorkspace.fsMap['subcircuits/EFR_t1.tsx']
+  linkFsMap['symbols/index.ts'] = importedWorkspace.fsMap['symbols/index.ts']
+  linkFsMap['symbols/TestSymbol.tsx'] = importedWorkspace.fsMap['symbols/TestSymbol.tsx']
+  linkFsMap['editor/meta.json'] = importedWorkspace.fsMap['editor/meta.json']
+
+  useEditorStore.getState().setFSMap(linkFsMap)
+  useEditorStore.getState().setActiveFilePath('schematics/main.tsx')
+  const linkedMainBefore = useEditorStore.getState().fsMap['schematics/main.tsx'] || ''
+  const subBeforeCount = (linkedMainBefore.match(/<EFR_t1\b/g) || []).length
+  const symbolBeforeCount = (linkedMainBefore.match(/<TestSymbol\b/g) || []).length
+
+  useEditorStore.getState().addPlacedComponent({
+    id: 'validate-sub-instance',
+    catalogId: 'subcircuit-instance',
+    name: 'EFR_t1_TEST',
+    props: {
+      subcircuitName: 'EFR_t1',
+      ports: ['VIN', 'VOUT'],
+      schX: 320,
+      schY: 220
+    },
+    tsxSnippet: ''
+  })
+  useEditorStore.getState().addPlacedComponent({
+    id: 'validate-symbol-instance',
+    catalogId: 'symbol-instance',
+    name: 'TestSymbol1',
+    props: {
+      symbolName: 'TestSymbol',
+      schX: 120,
+      schY: 180
+    },
+    tsxSnippet: ''
+  })
+  useEditorStore.getState().regenerateTSX()
+
+  const linkedMain = useEditorStore.getState().fsMap['schematics/main.tsx'] || ''
+  const subAfterCount = (linkedMain.match(/<EFR_t1\b/g) || []).length
+  const symbolAfterCount = (linkedMain.match(/<TestSymbol\b/g) || []).length
+  assert(subAfterCount > subBeforeCount, 'placing imported subcircuit should persist to schematic')
+  assert(symbolAfterCount > symbolBeforeCount, 'placing imported symbol should persist to schematic')
+
+  // Cross-workspace availability: a created subcircuit must persist in workspace model.
+  useEditorStore.getState().createWorkspace('WS Persist A')
+  const wsPersistA = useEditorStore.getState().activeWorkspaceId
+  useEditorStore.getState().addPlacedComponent({
+    id: 'persist-chip-a',
+    catalogId: 'customchip',
+    name: 'U_PERSIST',
+    props: { schX: 100, schY: 100, pinCount: 2, leftPins: 1, rightPins: 1, topPins: 0, bottomPins: 0 },
+    tsxSnippet: ''
+  })
+  useEditorStore.getState().createSubcircuit('PersistedBlock', ['persist-chip-a'], [
+    { componentId: 'persist-chip-a', pinName: 'L1', portName: 'IN' },
+    { componentId: 'persist-chip-a', pinName: 'R1', portName: 'OUT' }
+  ])
+
+  const afterCreateState = useEditorStore.getState()
+  assert(!!afterCreateState.workspaces[wsPersistA].fsMap['subcircuits/PersistedBlock.tsx'], 'created subcircuit not persisted into workspace fsMap')
+
+  useEditorStore.getState().createWorkspace('WS Persist B')
+  const wsPersistB = useEditorStore.getState().activeWorkspaceId
+  const otherWorkspaceSubcircuits = Object.values(useEditorStore.getState().workspaces)
+    .filter(ws => ws.id !== wsPersistB)
+    .flatMap(ws => Object.keys(ws.fsMap).filter(path => path.startsWith('subcircuits/') && path.endsWith('.tsx')))
+  assert(otherWorkspaceSubcircuits.includes('subcircuits/PersistedBlock.tsx'), 'created subcircuit should be discoverable from another workspace')
+
+  console.log('✅ PASS validate-workspace')
+}
+
+try {
+  run()
+} catch (error) {
+  const failure = error instanceof Error ? error : new Error(String(error))
+  console.error('❌ FAIL validate-workspace')
+  console.error(failure.message)
+  throw failure
 }
