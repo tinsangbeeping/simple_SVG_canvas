@@ -188,6 +188,28 @@ const normalizePathSegments = (segments: string[]): string[] => {
   return normalized
 }
 
+const findFallbackProjectPath = (targetPath: string, fsMap?: FSMap): string | null => {
+  if (!fsMap) return null
+
+  const normalizedTarget = targetPath.replace(/^\/+/, '').replace(/\.(tsx|ts)$/i, '').replace(/\/index$/i, '')
+  const basename = normalizedTarget.split('/').pop()
+  if (!basename) return null
+
+  const matches = Object.keys(fsMap).filter((candidate) => {
+    const normalizedCandidate = candidate.replace(/^\/+/, '').replace(/\.(tsx|ts)$/i, '').replace(/\/index$/i, '')
+    return normalizedCandidate === normalizedTarget || normalizedCandidate.endsWith(`/${basename}`)
+  })
+
+  return matches.length === 1 ? matches[0] : null
+}
+
+const isWorkspaceImportPath = (importPath: string): boolean => {
+  if (!importPath) return false
+  if (importPath.startsWith('.') || importPath.startsWith('/')) return true
+
+  return ['schematics/', 'subcircuits/', 'symbols/', 'editor/'].some(prefix => importPath.startsWith(prefix))
+}
+
 export const resolveImportPath = (fromPath: string, importPath: string, fsMap?: FSMap): string | null => {
   if (!importPath.startsWith('.')) {
     return null
@@ -210,7 +232,7 @@ export const resolveImportPath = (fromPath: string, importPath: string, fsMap?: 
     return candidates[0] || null
   }
 
-  return candidates.find(candidate => !!fsMap[candidate]) || null
+  return candidates.find(candidate => !!fsMap[candidate]) || findFallbackProjectPath(stemWithoutExtension, fsMap)
 }
 
 export const resolveProjectPath = (fromPath: string, targetPath: string, fsMap?: FSMap): string | null => {
@@ -232,7 +254,7 @@ export const resolveProjectPath = (fromPath: string, targetPath: string, fsMap?:
     return candidates[0] || null
   }
 
-  return candidates.find(candidate => !!fsMap[candidate]) || null
+  return candidates.find(candidate => !!fsMap[candidate]) || findFallbackProjectPath(normalized, fsMap)
 }
 
 export const extractSheetReferences = (code: string): Array<{ name: string; src: string }> => {
@@ -328,8 +350,7 @@ export const getBrokenImports = (fsMap: FSMap): Array<{ filePath: string; import
     ]
 
     dependencyRefs.forEach((importPath) => {
-      const looksResolvable = importPath.startsWith('.') || importPath.includes('/')
-      if (!looksResolvable) return
+      if (!isWorkspaceImportPath(importPath)) return
 
       const resolved = resolveProjectPath(path, importPath, fsMap)
       if (!resolved) {

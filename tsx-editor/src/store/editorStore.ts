@@ -3199,10 +3199,13 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     try {
       const { layoutCircuit } = await import('../utils/elkLayout')
 
-      const edges = state.wires.map(w => ({
-        from: { componentId: w.from.componentId },
-        to: { componentId: w.to.componentId }
-      }))
+      const layoutTargetIds = new Set(layoutTargets.map(component => component.id))
+      const edges = state.wires
+        .filter(wire => layoutTargetIds.has(wire.from.componentId) && layoutTargetIds.has(wire.to.componentId))
+        .map(wire => ({
+          from: { componentId: wire.from.componentId, pinName: wire.from.pinName },
+          to: { componentId: wire.to.componentId, pinName: wire.to.pinName }
+        }))
 
       const positionMap = await layoutCircuit(layoutTargets, edges)
 

@@ -298,6 +298,15 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   }
   assert(didRejectBrokenImport, 'validateImports should reject missing relative imports')
 
+  const externalImportFsMap = createDefaultWorkspaceFsMap('External Import WS')
+  externalImportFsMap['schematics/Test1.tsx'] = `import { resistor } from "@tscircuit/core"\n\nexport default () => <board><resistor name="R1" /></board>`
+  validateImports(externalImportFsMap)
+
+  const canonicalRelocationFsMap = createDefaultWorkspaceFsMap('Canonical Relocation WS')
+  canonicalRelocationFsMap['schematics/main.tsx'] = `import { Deb_button_test2 } from "./Deb_button_test2"\n\nexport default () => <board><Deb_button_test2 name="X1" /></board>`
+  canonicalRelocationFsMap['subcircuits/Deb_button_test2.tsx'] = `export function Deb_button_test2(props: { name: string }) {\n  return <subcircuit name={props.name}></subcircuit>\n}`
+  validateImports(canonicalRelocationFsMap)
+
   const multiEntryFsMap = createDefaultWorkspaceFsMap('Multi Entry WS')
   multiEntryFsMap['schematics/PageA.tsx'] = `export default () => <board><chip name="U_A" pinCount={8} /></board>`
   multiEntryFsMap['schematics/PageB.tsx'] = `import PageBBody from "./PageBBody"\n\nexport default PageBBody`
