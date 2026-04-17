@@ -20,7 +20,14 @@ import {
 import { minimalImportExportTestUtils } from '../src/store/editorStore'
 import { useEditorStore } from '../src/store/editorStore'
 import { buildProjectFileTree } from '../src/utils/projectManager'
-import { extractAllSubcircuits, extractAllSymbols } from '../src/utils/projectManager'
+import {
+  buildComponentUsage,
+  buildDependencyGraph,
+  buildImportedProjectState,
+  buildSubcircuitRegistry,
+  extractAllSubcircuits,
+  extractAllSymbols
+} from '../src/utils/projectManager'
 import { classifyFilePath } from '../src/utils/fileClassification'
 
 interface WorkspaceState {
@@ -171,6 +178,17 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   assert(!normalizedMainImport.includes('export default function ImportedThing'), 'single-file TSX import should not overwrite main with standalone component source')
   assert(normalizedSubImport.includes('export function SingleImport'), 'single-file TSX import should be renamed to match the target file name')
 
+  const standaloneBoardFile = `export default () => (
+  <board width="40mm" height="30mm">
+    <chip name="U_board" pinCount={8} />
+  </board>
+)`
+  const normalizedBoardIntoSubcircuitPath = minimalImportExportTestUtils.normalizeImportedTSXContent(
+    standaloneBoardFile,
+    'subcircuits/PowerBlock.tsx'
+  )
+  assert(normalizedBoardIntoSubcircuitPath.includes('<board'), 'board import should remain a schematic even when the current path is under subcircuits')
+  assert(!normalizedBoardIntoSubcircuitPath.includes('<subcircuit'), 'board import must not be rewritten as a subcircuit')
 
   // Regression: canonical advanced IC schematic import should normalize safely.
   const advancedChipSchematic = `export default () => (
@@ -296,12 +314,19 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   assert(importedWorkspace.fsMap['subcircuits/EFR_t1.tsx'].includes('"VOUT"'), 'VOUT port not preserved')
 
   // Imported registries should discover linked project content.
+  importedWorkspace.fsMap['subcircuits/NamedBlock.tsx'] = `export const ports = ["IN", "OUT"] as const\n\nexport function DebounceBlock(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n      <resistor name="R_db" resistance="10k" />\n    </subcircuit>\n  )\n}\n`
+  importedWorkspace.fsMap['subcircuits/InvalidDefault.tsx'] = `export default () => (\n  <subcircuit>\n    <resistor name="R_bad" resistance="1k" />\n  </subcircuit>\n)`
+
   const importedSubcircuits = extractAllSubcircuits(importedWorkspace.fsMap)
   const importedSymbols = extractAllSymbols(importedWorkspace.fsMap)
   const importedEFR = importedSubcircuits.find(s => s.name === 'EFR_t1')
+  const importedDebounce = importedSubcircuits.find(s => s.name === 'DebounceBlock')
   assert(!!importedEFR, 'subcircuit registry missing imported EFR_t1')
   assert((importedEFR?.ports || []).includes('VIN'), 'subcircuit registry missing VIN port')
   assert((importedEFR?.ports || []).includes('VOUT'), 'subcircuit registry missing VOUT port')
+  assert(!!importedDebounce, 'subcircuit registry should use the named exported component for composition')
+  assert(importedDebounce?.filePath === 'subcircuits/NamedBlock.tsx', 'subcircuit registry should preserve the real source file path')
+  assert(!importedSubcircuits.some(s => s.filePath === 'subcircuits/InvalidDefault.tsx'), 'default-export anonymous subcircuits should be rejected from the registry')
   assert(importedSymbols.some(s => s.name === 'TestSymbol'), 'symbol registry missing imported TestSymbol')
 
   // Metadata preserved
@@ -409,6 +434,7 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   linkFsMap['schematics/main.tsx'] = importedWorkspace.fsMap['schematics/main.tsx']
   linkFsMap['subcircuits/index.ts'] = importedWorkspace.fsMap['subcircuits/index.ts']
   linkFsMap['subcircuits/EFR_t1.tsx'] = importedWorkspace.fsMap['subcircuits/EFR_t1.tsx']
+  linkFsMap['subcircuits/NamedBlock.tsx'] = importedWorkspace.fsMap['subcircuits/NamedBlock.tsx']
   linkFsMap['symbols/index.ts'] = importedWorkspace.fsMap['symbols/index.ts']
   linkFsMap['symbols/TestSymbol.tsx'] = importedWorkspace.fsMap['symbols/TestSymbol.tsx']
   linkFsMap['editor/meta.json'] = importedWorkspace.fsMap['editor/meta.json']
@@ -442,13 +468,119 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
     },
     tsxSnippet: ''
   })
-  useEditorStore.getState().regenerateTSX()
+  useEditorStore.getState().insertSubcircuitInstance('DebounceBlock', {
+    schX: 420,
+    schY: 260,
+    filePath: 'subcircuits/NamedBlock.tsx'
+  })
 
   const linkedMain = useEditorStore.getState().fsMap['schematics/main.tsx'] || ''
   const subAfterCount = (linkedMain.match(/<EFR_t1\b/g) || []).length
   const symbolAfterCount = (linkedMain.match(/<TestSymbol\b/g) || []).length
   assert(subAfterCount > subBeforeCount, 'placing imported subcircuit should persist to schematic')
   assert(symbolAfterCount > symbolBeforeCount, 'placing imported symbol should persist to schematic')
+  assert(linkedMain.includes('import { DebounceBlock } from "../subcircuits/NamedBlock"'), 'named subcircuit insertion should import from the real backing file')
+  assert(linkedMain.includes('<DebounceBlock'), 'named subcircuit insertion should compose the exported component into the board')
+
+  // Batch import must rebuild the subcircuit registry and enable patch composition.
+  useEditorStore.getState().createWorkspace('Batch Patch Flow')
+  useEditorStore.getState().importFilesBatch([
+    {
+      fileName: 'Deb_button_test2.tsx',
+      content: `export const ports = ["IN", "OUT"] as const
+
+export function Deb_button_test2(props: { name: string; schX?: number; schY?: number }) {
+  return (
+    <subcircuit name={props.name}>
+      <resistor name="R_btn" resistance="10k" />
+    </subcircuit>
+  )
+}`
+    },
+    {
+      fileName: 'Debounce_led.tsx',
+      content: `export const ports = ["IN", "OUT"] as const
+
+export function Debounce_led(props: { name: string; schX?: number; schY?: number }) {
+  return (
+    <subcircuit name={props.name}>
+      <led name="D_led" color="red" />
+    </subcircuit>
+  )
+}`
+    },
+    {
+      fileName: 'MainBoard.tsx',
+      content: `export default () => (
+  <board width="50mm" height="50mm">
+    <chip name="U_BATCH" pinCount={8} />
+  </board>
+)`
+    }
+  ])
+
+  const batchState = useEditorStore.getState()
+  const batchRegistry = buildSubcircuitRegistry(batchState.fsMap)
+  assert(batchState.activeFilePath === 'schematics/MainBoard.tsx', 'batch import should activate the imported schematic entry file')
+  assert(!!batchRegistry.Deb_button_test2, 'batch import should register Deb_button_test2 as a reusable subcircuit')
+  assert(!!batchRegistry.Debounce_led, 'batch import should register Debounce_led as a reusable subcircuit')
+
+  useEditorStore.getState().applyPatch({
+    id: 'validate-patch',
+    name: 'Validate Patch',
+    components: [
+      { subcircuit: 'Deb_button_test2', instanceName: 'BTN1', schX: 140, schY: 180 },
+      { subcircuit: 'Debounce_led', instanceName: 'LED1', schX: 320, schY: 180 }
+    ],
+    wiring: [
+      '<trace from=".BTN1 > .OUT" to=".LED1 > .IN" />'
+    ]
+  })
+
+  const patchedMain = useEditorStore.getState().fsMap['schematics/MainBoard.tsx'] || ''
+  assert(patchedMain.includes('import { Deb_button_test2 } from "../subcircuits/Deb_button_test2"'), 'patch application should import Deb_button_test2 through the registry path')
+  assert(patchedMain.includes('import { Debounce_led } from "../subcircuits/Debounce_led"'), 'patch application should import Debounce_led through the registry path')
+  assert(patchedMain.includes('<Deb_button_test2'), 'patch application should compose the first imported subcircuit into the board')
+  assert(patchedMain.includes('<Debounce_led'), 'patch application should compose the second imported subcircuit into the board')
+
+  // Dependency graph and component usage must track file relationships and protect delete operations.
+  const depFsMap = createDefaultWorkspaceFsMap('Dependency Graph WS')
+  depFsMap['schematics/MainDeps.tsx'] = `import { Deb_button_test2 } from "../subcircuits/Deb_button_test2"
+import { Debounce_led } from "../subcircuits/Debounce_led"
+
+export default () => (
+  <board width="50mm" height="50mm">
+    <Deb_button_test2 name="BTN1" />
+    <Debounce_led name="LED1" />
+    <trace from=".BTN1 > .OUT" to=".LED1 > .IN" />
+  </board>
+)`
+  depFsMap['subcircuits/Deb_button_test2.tsx'] = `export const ports = ["IN", "OUT"] as const
+
+export function Deb_button_test2(props: { name: string }) {
+  return <subcircuit name={props.name}></subcircuit>
+}`
+  depFsMap['subcircuits/Debounce_led.tsx'] = `export const ports = ["IN", "OUT"] as const
+
+export function Debounce_led(props: { name: string }) {
+  return <subcircuit name={props.name}></subcircuit>
+}`
+
+  const importedProject = buildImportedProjectState(depFsMap)
+  const dependencyGraph = buildDependencyGraph(depFsMap)
+  const componentUsage = buildComponentUsage(depFsMap)
+  assert(importedProject.entryFiles.includes('schematics/MainDeps.tsx'), 'batch import project state should register schematic entry files')
+  assert(importedProject.registry.Deb_button_test2 === 'subcircuits/Deb_button_test2.tsx', 'project registry should map subcircuit export names to their real files')
+  assert(dependencyGraph['schematics/MainDeps.tsx']?.imports.includes('subcircuits/Deb_button_test2.tsx'), 'dependency graph should link main schematic imports to imported subcircuits')
+  assert(dependencyGraph['subcircuits/Deb_button_test2.tsx']?.usedBy.includes('schematics/MainDeps.tsx'), 'dependency graph should compute reverse usage for safe delete')
+  assert(componentUsage['Deb_button_test2']?.includes('schematics/MainDeps.tsx'), 'component usage map should track where a subcircuit is instantiated')
+
+  useEditorStore.getState().createWorkspace('Delete Guard WS')
+  useEditorStore.getState().setFSMap(depFsMap)
+  useEditorStore.getState().setActiveFilePath('schematics/MainDeps.tsx')
+  useEditorStore.getState().deleteFile('subcircuits/Deb_button_test2.tsx')
+  const deleteGuardState = useEditorStore.getState()
+  assert(!!deleteGuardState.fsMap['subcircuits/Deb_button_test2.tsx'], 'safe delete should prevent removing a file that is still used by a schematic')
 
   // Cross-workspace availability: a created subcircuit must persist in workspace model.
   useEditorStore.getState().createWorkspace('WS Persist A')

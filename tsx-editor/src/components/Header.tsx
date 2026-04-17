@@ -1,6 +1,10 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import { pixelToSchematic } from '../utils/coordinateScale'
+import { buildSubcircuitRegistry } from '../utils/projectManager'
+import { getApplicablePatches } from '../lib/patches'
+
+const MAIN_SCHEMATIC_PATH = 'schematics/main.tsx'
 
 export const Header: React.FC = () => {
   const {
@@ -15,6 +19,8 @@ export const Header: React.FC = () => {
     generateFlatCircuitTSX,
     generateProjectStructure,
     importTSXIntoActiveFile,
+    importFilesBatch,
+    applyPatch,
     setCodeViewTab,
     setExportPreview,
     activeFilePath,
@@ -29,17 +35,24 @@ export const Header: React.FC = () => {
   const exportWorkspaceJSON = useEditorStore(s => s.exportWorkspaceJSON)
   const importWorkspaceJSON = useEditorStore(s => s.importWorkspaceJSON)
 
-  const currentFileLabel = activeFilePath === 'main.tsx'
-    ? 'main.tsx'
+  const currentFileLabel = activeFilePath === MAIN_SCHEMATIC_PATH || activeFilePath === 'main.tsx'
+    ? MAIN_SCHEMATIC_PATH
     : activeFilePath.replace('subcircuits/', '')
 
   const [showExportDialog, setShowExportDialog] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [showWsImportDialog, setShowWsImportDialog] = useState(false)
+  const [showBatchImportDialog, setShowBatchImportDialog] = useState(false)
+  const [showPatchDialog, setShowPatchDialog] = useState(false)
   const [importContent, setImportContent] = useState('')
   const [wsImportContent, setWsImportContent] = useState('')
+  const [batchImportContent, setBatchImportContent] = useState('')
   const [exportName, setExportName] = useState('MyComponent')
+  const [selectedPatchId, setSelectedPatchId] = useState('')
   const [isLayouting, setIsLayouting] = useState(false)
+
+  const subcircuitRegistry = useMemo(() => buildSubcircuitRegistry(fsMap), [fsMap])
+  const applicablePatches = useMemo(() => getApplicablePatches(subcircuitRegistry), [subcircuitRegistry])
 
   const downloadTextFile = (content: string, fileName: string) => {
     const blob = new Blob([content], { type: 'text/plain' })
@@ -112,7 +125,7 @@ export const Header: React.FC = () => {
       rotateSelectedComponents, undo, redo, cancelWiring, wiringStart])
 
   const handleExport = () => {
-    const circuitTsx = generateFlatCircuitTSX() || fsMap['main.tsx'] || ''
+    const circuitTsx = generateFlatCircuitTSX() || fsMap[MAIN_SCHEMATIC_PATH] || fsMap['main.tsx'] || ''
     setExportPreview({ fileName: 'circuit.tsx', content: circuitTsx })
     setCodeViewTab('export')
     downloadTextFile(circuitTsx, 'circuit.tsx')
@@ -130,9 +143,65 @@ export const Header: React.FC = () => {
       importTSXIntoActiveFile(importContent)
       setShowImportDialog(false)
       setImportContent('')
-      alert(`Imported TSX into ${activeFilePath}`)
+      alert('Imported TSX successfully and updated the target file.')
     } catch (error) {
       alert('Import failed: ' + (error as Error).message)
+    }
+  }
+
+  const parseBatchPayload = (payload: string): Array<{ fileName: string; content: string }> => {
+    const parsed = JSON.parse(payload) as unknown
+
+    if (Array.isArray(parsed)) {
+      return parsed.map((entry, index) => {
+        if (!entry || typeof entry !== 'object') {
+          throw new Error(`Batch entry ${index + 1} is invalid.`)
+        }
+        const fileName = String((entry as any).fileName || (entry as any).path || '').trim()
+        const content = String((entry as any).content || '').trim()
+        if (!fileName || !content) {
+          throw new Error(`Batch entry ${index + 1} must include fileName and content.`)
+        }
+        return { fileName, content }
+      })
+    }
+
+    if (parsed && typeof parsed === 'object') {
+      return Object.entries(parsed as Record<string, string>).map(([fileName, content]) => ({
+        fileName,
+        content: String(content)
+      }))
+    }
+
+    throw new Error('Batch import expects a JSON array or an object map of file paths to content.')
+  }
+
+  const handleBatchImport = () => {
+    if (!batchImportContent.trim()) return
+    try {
+      const files = parseBatchPayload(batchImportContent)
+      importFilesBatch(files)
+      setShowBatchImportDialog(false)
+      setBatchImportContent('')
+      alert(`Imported ${files.length} files and rebuilt the reusable block registry.`)
+    } catch (error) {
+      alert('Batch import failed: ' + (error as Error).message)
+    }
+  }
+
+  const handleApplyPatch = () => {
+    const patch = applicablePatches.find(item => item.id === selectedPatchId) || applicablePatches[0]
+    if (!patch) {
+      alert('No applicable patches are available for the current imported subcircuits.')
+      return
+    }
+
+    try {
+      applyPatch(patch)
+      setShowPatchDialog(false)
+      alert(`Applied patch: ${patch.name}`)
+    } catch (error) {
+      alert('Patch failed: ' + (error as Error).message)
     }
   }
 
@@ -153,7 +222,7 @@ export const Header: React.FC = () => {
       importWorkspaceJSON(wsImportContent)
       setShowWsImportDialog(false)
       setWsImportContent('')
-      alert('Workspace imported! Switch to it in the Workspaces tab.')
+      alert('Workspace imported and activated.')
     } catch (e) {
       alert('Workspace import failed: ' + (e as Error).message)
     }
@@ -202,7 +271,7 @@ export const Header: React.FC = () => {
       })
       .join('\n')
 
-    const exportedTSX = `import React from "react"\n\nexport default function ${exportName}(props: {\n  name: string\n  schX?: number\n  schY?: number\n}) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n${componentsTSX || '      {/* Add components here */}'}\n    </subcircuit>\n  )\n}\n`
+    const exportedTSX = `import React from "react"\n\nexport const ports = [] as const\n\nexport function ${exportName}(props: {\n  name: string\n  schX?: number\n  schY?: number\n}) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n${componentsTSX || '      {/* Add components here */}'}\n    </subcircuit>\n  )\n}\n`
     setExportPreview({ fileName: `${exportName}.tsx`, content: exportedTSX })
     setCodeViewTab('export')
     setShowExportDialog(false)
@@ -254,6 +323,8 @@ export const Header: React.FC = () => {
             Export Structure
           </button>
           <button className="btn btn-secondary" onClick={() => setShowImportDialog(true)}>Import TSX</button>
+          <button className="btn btn-secondary" onClick={() => setShowBatchImportDialog(true)}>Import Batch</button>
+          <button className="btn btn-secondary" onClick={() => setShowPatchDialog(true)}>Apply Patch</button>
           <button className="btn btn-secondary" onClick={handleCopy}>Copy TSX</button>
           <button className="btn btn-secondary" onClick={handleExport}>Export Circuit</button>
           <button className="btn btn-secondary" onClick={handleExportWorkspace} title="Download workspace as JSON">Export WS</button>
@@ -303,6 +374,55 @@ export const Header: React.FC = () => {
             <div style={{ display: 'flex', gap: 10 }}>
               <button className="btn btn-primary" onClick={handleImport} style={{ flex: 1 }}>Import Into Current File</button>
               <button className="btn btn-secondary" onClick={() => setShowImportDialog(false)} style={{ flex: 1 }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBatchImportDialog && (
+        <div style={modalBase}>
+          <div style={{ background: '#2d2d2d', padding: 30, borderRadius: 8, minWidth: 640, maxWidth: 860, border: '1px solid #3e3e3e' }}>
+            <h2 style={{ marginBottom: 20, fontSize: 18 }}>Batch Import Files</h2>
+            <div style={{ marginBottom: 12, fontSize: 12, color: '#aaa' }}>
+              Paste a JSON array of file objects or a path-to-content object map. Imported subcircuits are registered automatically for patches.
+            </div>
+            <textarea
+              value={batchImportContent}
+              onChange={e => setBatchImportContent(e.target.value)}
+              placeholder={'[{"fileName":"Deb_button_test2.tsx","content":"export function Deb_button_test2(...) { ... }"}]'}
+              style={{ width: '100%', minHeight: 240, resize: 'vertical', background: '#1e1e1e', border: '1px solid #3e3e3e', color: '#d4d4d4', padding: 12, fontFamily: 'monospace', fontSize: 13, borderRadius: 6, marginBottom: 16 }}
+            />
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn btn-primary" onClick={handleBatchImport} style={{ flex: 1 }}>Import Batch</button>
+              <button className="btn btn-secondary" onClick={() => setShowBatchImportDialog(false)} style={{ flex: 1 }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPatchDialog && (
+        <div style={modalBase}>
+          <div style={{ background: '#2d2d2d', padding: 30, borderRadius: 8, minWidth: 520, border: '1px solid #3e3e3e' }}>
+            <h2 style={{ marginBottom: 16, fontSize: 18 }}>Apply Patch</h2>
+            <div style={{ marginBottom: 12, fontSize: 12, color: '#aaa' }}>
+              Patches only activate when their required subcircuits are present in the registry.
+            </div>
+            <select
+              value={selectedPatchId}
+              onChange={e => setSelectedPatchId(e.target.value)}
+              style={{ width: '100%', padding: '8px 10px', background: '#1e1e1e', border: '1px solid #3e3e3e', color: '#d4d4d4', borderRadius: 6, marginBottom: 12 }}
+            >
+              <option value="">{applicablePatches.length > 0 ? 'Select a patch' : 'No applicable patches yet'}</option>
+              {applicablePatches.map(patch => (
+                <option key={patch.id} value={patch.id}>{patch.name}</option>
+              ))}
+            </select>
+            <div style={{ marginBottom: 16, fontSize: 12, color: '#bbb', lineHeight: 1.5 }}>
+              {applicablePatches.find(patch => patch.id === selectedPatchId)?.description || applicablePatches[0]?.description || 'Import matching subcircuits first to unlock a patch.'}
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn btn-primary" onClick={handleApplyPatch} style={{ flex: 1 }} disabled={applicablePatches.length === 0}>Apply Patch</button>
+              <button className="btn btn-secondary" onClick={() => setShowPatchDialog(false)} style={{ flex: 1 }}>Cancel</button>
             </div>
           </div>
         </div>

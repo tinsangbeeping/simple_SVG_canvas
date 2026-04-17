@@ -45,7 +45,7 @@
 1. Select multiple components (Ctrl+Click)
 2. Click "Create Subcircuit" in properties panel
 3. Name your subcircuit
-4. Result: Saved to `lib/patches/YourName.tsx`
+4. Result: Saved to the subcircuits folder as a reusable file
 
 #### Example Output
 ```tsx
@@ -61,6 +61,12 @@ export function LEDCircuit(props: { schX?: number; schY?: number }) {
 ```
 
 ### 5. Component Export System 📦
+
+### Import Behavior
+- Importing a standalone TSX subcircuit or symbol will keep it as its own named file
+- Importing into the main schematic no longer overwrites the board with the raw file source
+- Imported workspace content stays scoped to its workspace tabs and active file
+
 
 #### Export as Reusable Component
 1. Build your circuit

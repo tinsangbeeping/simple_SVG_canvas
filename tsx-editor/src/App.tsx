@@ -7,11 +7,20 @@ import { FileTree } from './components/FileTree'
 import { EditorTabs } from './components/EditorTabs'
 import { EnhancedPropertiesPanel } from './components/EnhancedPropertiesPanel'
 import { useEditorStore } from './store/editorStore'
-import { buildProjectFileTree } from './utils/projectManager'
+import {
+  buildComponentUsage,
+  buildProjectFileTree,
+  extractAllSubcircuits,
+  extractAllSymbols
+} from './utils/projectManager'
+import { classifyFilePath, isCanvasEditableFileType } from './utils/fileClassification'
 import { CatalogItem } from './types/catalog'
+import { getApplicablePatches } from './lib/patches'
 import './App.css'
 
-type LeftTab = 'workspaces' | 'files' | 'components' | 'symbols' | 'subcircuits'
+const MAIN_SCHEMATIC_PATH = 'schematics/main.tsx'
+
+type LeftTab = 'workspaces' | 'files' | 'components' | 'symbols' | 'subcircuits' | 'patches'
 
 const TAB_LABELS: { id: LeftTab; label: string }[] = [
   { id: 'workspaces', label: 'WS' },
@@ -19,6 +28,7 @@ const TAB_LABELS: { id: LeftTab; label: string }[] = [
   { id: 'components', label: 'Parts' },
   { id: 'symbols',    label: 'Sym' },
   { id: 'subcircuits',label: 'Sub' },
+  { id: 'patches',    label: 'Patch' },
 ]
 
 function App() {
@@ -35,12 +45,17 @@ function App() {
   const placedComponents     = useEditorStore(s => s.placedComponents)
   const wires                = useEditorStore(s => s.wires)
   const updatePlacedComponent= useEditorStore(s => s.updatePlacedComponent)
+  const setFSMap             = useEditorStore(s => s.setFSMap)
   const workspaces           = useEditorStore(s => s.workspaces)
   const activeWorkspaceId    = useEditorStore(s => s.activeWorkspaceId)
   const switchWorkspace      = useEditorStore(s => s.switchWorkspace)
   const createWorkspace      = useEditorStore(s => s.createWorkspace)
   const deleteWorkspace      = useEditorStore(s => s.deleteWorkspace)
   const renameWorkspace      = useEditorStore(s => s.renameWorkspace)
+  const deleteFile           = useEditorStore(s => s.deleteFile)
+  const moveFile             = useEditorStore(s => s.moveFile)
+  const insertSubcircuitInstance = useEditorStore(s => s.insertSubcircuitInstance)
+  const applyPatch           = useEditorStore(s => s.applyPatch)
 
   const projectFileTree = buildProjectFileTree(fsMap)
 
@@ -52,13 +67,30 @@ function App() {
     ? wires.filter(w => w.from.componentId === selectedComponent.id || w.to.componentId === selectedComponent.id)
     : []
 
-  const activeFileContent = fsMap[activeFilePath || 'main.tsx'] || ''
+  const activeFileContent = fsMap[activeFilePath || MAIN_SCHEMATIC_PATH] || ''
+  const activeFileType = classifyFilePath(activeFilePath || MAIN_SCHEMATIC_PATH)
+  const canRenderCanvas = isCanvasEditableFileType(activeFileType)
 
-  // Derived symbol and subcircuit lists from fsMap
-  const symbolFiles = Object.keys(fsMap).filter(p => p.startsWith('symbols/') && p.endsWith('.tsx'))
-  const subcircuitFiles = Object.keys(fsMap).filter(
-    p => p.startsWith('subcircuits/') && p.endsWith('.tsx')
+  const symbolRegistry = extractAllSymbols(fsMap)
+  const subcircuitRegistry = extractAllSubcircuits(fsMap)
+  const componentUsage = buildComponentUsage(fsMap)
+  const applicablePatches = getApplicablePatches(
+    Object.fromEntries(subcircuitRegistry.map(subckt => [subckt.name, { filePath: subckt.filePath, ports: subckt.ports }]))
   )
+  const savedSubcircuitsFromOtherWorkspaces = Object.values(workspaces)
+    .filter(ws => ws.id !== activeWorkspaceId)
+    .flatMap(ws =>
+      Object.entries(ws.fsMap)
+        .filter(([path]) => path.startsWith('subcircuits/') && path.endsWith('.tsx') && path !== 'subcircuits/index.ts')
+        .map(([path, content]) => ({
+          workspaceId: ws.id,
+          workspaceName: ws.name,
+          name: path.replace('subcircuits/', '').replace('.tsx', ''),
+          filePath: path,
+          content
+        }))
+    )
+    .filter(saved => !subcircuitRegistry.some(local => local.name === saved.name))
 
   useEffect(() => { regenerateTSX() }, [regenerateTSX])
 
@@ -73,6 +105,54 @@ function App() {
     }
     setEditingWsId(null)
     setEditingWsName('')
+  }
+
+  const createNewSubcircuitFile = () => {
+    const baseName = prompt('New subcircuit name (.tsx):', 'MySubcircuit')?.trim()
+    if (!baseName) return
+    const safeName = baseName.replace(/[^a-zA-Z0-9_]/g, '_')
+    if (!safeName) return
+
+    const filePath = `subcircuits/${safeName}.tsx`
+    if (fsMap[filePath]) {
+      setActiveFilePath(filePath)
+      return
+    }
+
+    setFSMap({
+      ...fsMap,
+      [filePath]: `export const ports = [] as const\n\nexport function ${safeName}(props: { name: string; schX?: number; schY?: number }) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n      {/* Add components here */}\n    </subcircuit>\n  )\n}\n`
+    })
+    setActiveFilePath(filePath)
+  }
+
+  const importSavedSubcircuitToCurrentWorkspace = (name: string, content: string) => {
+    const filePath = `subcircuits/${name}.tsx`
+    const nextMap = {
+      ...fsMap,
+      [filePath]: content
+    }
+    setFSMap(nextMap)
+    setActiveFilePath(filePath)
+  }
+
+  const createNewSymbolFile = () => {
+    const baseName = prompt('New symbol name (.tsx):', 'MySymbol')?.trim()
+    if (!baseName) return
+    const safeName = baseName.replace(/[^a-zA-Z0-9_]/g, '_')
+    if (!safeName) return
+
+    const filePath = `symbols/${safeName}.tsx`
+    if (fsMap[filePath]) {
+      setActiveFilePath(filePath)
+      return
+    }
+
+    setFSMap({
+      ...fsMap,
+      [filePath]: `export function ${safeName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <symbol>\n      <line x1=\"-8\" y1=\"0\" x2=\"8\" y2=\"0\" stroke=\"black\" />\n    </symbol>\n  )\n}\n`
+    })
+    setActiveFilePath(filePath)
   }
 
   return (
@@ -162,6 +242,8 @@ function App() {
               <FileTree
                 root={projectFileTree}
                 onFileSelect={setActiveFilePath}
+                onFileDelete={deleteFile}
+                onFileMove={moveFile}
                 activeFilePath={activeFilePath}
               />
             )}
@@ -174,22 +256,33 @@ function App() {
             {/* SYMBOLS */}
             {leftPanelTab === 'symbols' && (
               <div style={{ padding: 8 }}>
-                <div style={{ color: '#ccc', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Symbol Files</div>
-                {symbolFiles.length === 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ color: '#ccc', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>Symbol Files</div>
+                  <button
+                    style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
+                    onClick={createNewSymbolFile}
+                  >+ New</button>
+                </div>
+                {symbolRegistry.length === 0 && (
                   <div style={{ color: '#666', fontSize: 12 }}>No symbol files found.<br />Add .tsx files to the <code>symbols/</code> folder.</div>
                 )}
-                {symbolFiles.map(path => (
+                {symbolRegistry.map(symbol => (
                   <div
-                    key={path}
+                    key={symbol.filePath}
+                    draggable
                     style={{
                       padding: '5px 8px', marginBottom: 2, borderRadius: 4, cursor: 'pointer',
-                      background: path === activeFilePath ? '#094771' : '#2a2a2a',
-                      color: path === activeFilePath ? '#fff' : '#ccc',
+                      background: symbol.filePath === activeFilePath ? '#094771' : '#2a2a2a',
+                      color: symbol.filePath === activeFilePath ? '#fff' : '#ccc',
                       fontSize: 12
                     }}
-                    onClick={() => setActiveFilePath(path)}
+                    onClick={() => setActiveFilePath(symbol.filePath)}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('symbolName', symbol.name)
+                    }}
+                    title="Drag onto canvas to place placeholder symbol"
                   >
-                    📐 {path.replace('symbols/', '')}
+                    📐 {symbol.name}
                   </div>
                 ))}
               </div>
@@ -198,24 +291,128 @@ function App() {
             {/* SUBCIRCUITS */}
             {leftPanelTab === 'subcircuits' && (
               <div style={{ padding: 8 }}>
-                <div style={{ color: '#ccc', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Subcircuits</div>
-                {subcircuitFiles.length === 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ color: '#ccc', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>Subcircuits</div>
+                  <button
+                    style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
+                    onClick={createNewSubcircuitFile}
+                  >+ New</button>
+                </div>
+                {subcircuitRegistry.length === 0 && (
                   <div style={{ color: '#666', fontSize: 12 }}>No subcircuit files yet.</div>
                 )}
-                {subcircuitFiles.map(path => (
+                {subcircuitRegistry.map(subckt => (
                   <div
-                    key={path}
+                    key={subckt.filePath}
+                    draggable
                     style={{
                       padding: '5px 8px', marginBottom: 2, borderRadius: 4, cursor: 'pointer',
-                      background: path === activeFilePath ? '#094771' : '#2a2a2a',
-                      color: path === activeFilePath ? '#fff' : '#ccc',
-                      fontSize: 12
+                      background: subckt.filePath === activeFilePath ? '#094771' : '#2a2a2a',
+                      color: subckt.filePath === activeFilePath ? '#fff' : '#ccc',
+                      fontSize: 12,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8
                     }}
-                    onClick={() => setActiveFilePath(path)}
+                    onClick={() => {
+                      if (activeFileType === 'schematic-tsx') {
+                        insertSubcircuitInstance(subckt.name, { filePath: subckt.filePath })
+                      } else {
+                        setActiveFilePath(subckt.filePath)
+                      }
+                    }}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('subcircuitName', subckt.name)
+                      e.dataTransfer.setData('subcircuitPath', subckt.filePath)
+                    }}
+                    title={activeFileType === 'schematic-tsx' ? 'Click to insert into the active board or drag onto canvas' : 'Open subcircuit file'}
                   >
-                    🔧 {path.replace('subcircuits/', '')}
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      🔧 {subckt.name}{subckt.ports.length > 0 ? ` (${subckt.ports.join(', ')})` : ''}
+                      <span style={{ display: 'block', fontSize: 10, color: '#8fb6d8' }}>
+                        used in {componentUsage[subckt.name]?.length || 0} file(s)
+                      </span>
+                    </span>
+                    <button
+                      style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 12 }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setActiveFilePath(subckt.filePath)
+                      }}
+                      title="Open subcircuit source"
+                    >
+                      ✏
+                    </button>
                   </div>
                 ))}
+
+                {savedSubcircuitsFromOtherWorkspaces.length > 0 && (
+                  <>
+                    <div style={{ color: '#888', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, marginTop: 10, marginBottom: 6 }}>
+                      Saved In Other WS
+                    </div>
+                    {savedSubcircuitsFromOtherWorkspaces.map(saved => (
+                      <div
+                        key={`${saved.workspaceId}:${saved.name}`}
+                        style={{
+                          padding: '6px 8px',
+                          marginBottom: 4,
+                          borderRadius: 4,
+                          background: '#2a2a2a',
+                          border: '1px solid #3a3a3a'
+                        }}
+                      >
+                        <div style={{ color: '#ddd', fontSize: 12, marginBottom: 4 }}>🔁 {saved.name}</div>
+                        <div style={{ color: '#888', fontSize: 11, marginBottom: 6 }}>from {saved.workspaceName}</div>
+                        <button
+                          style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
+                          onClick={() => importSavedSubcircuitToCurrentWorkspace(saved.name, saved.content)}
+                        >
+                          Use In This WS
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* PATCHES */}
+            {leftPanelTab === 'patches' && (
+              <div style={{ padding: 8 }}>
+                <div style={{ color: '#ccc', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
+                  Patches
+                </div>
+                {applicablePatches.length === 0 ? (
+                  <div style={{ color: '#666', fontSize: 12 }}>
+                    No patches available yet. Import the required subcircuits first.
+                  </div>
+                ) : (
+                  applicablePatches.map(patch => (
+                    <div
+                      key={patch.id}
+                      style={{
+                        padding: '8px 10px',
+                        marginBottom: 6,
+                        borderRadius: 4,
+                        background: '#2a2a2a',
+                        border: '1px solid #3a3a3a'
+                      }}
+                    >
+                      <div style={{ color: '#ddd', fontSize: 12, marginBottom: 4 }}>🧩 {patch.name}</div>
+                      <div style={{ color: '#888', fontSize: 11, marginBottom: 6 }}>{patch.description || 'Reusable macro patch'}</div>
+                      <button
+                        style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '3px 8px', cursor: 'pointer', fontSize: 11 }}
+                        onClick={() => applyPatch(patch)}
+                        disabled={activeFileType !== 'schematic-tsx'}
+                        title={activeFileType === 'schematic-tsx' ? 'Apply patch to active board' : 'Open a schematic file to apply patches'}
+                      >
+                        Insert Patch
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             )}
 
@@ -225,7 +422,25 @@ function App() {
         {/* ── Center: editor tabs + canvas ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <EditorTabs />
-          <Canvas />
+          {canRenderCanvas ? (
+            <Canvas />
+          ) : (
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#9a9a9a',
+                background: '#1e1e1e',
+                borderTop: '1px solid #2d2d2d',
+                padding: 24,
+                textAlign: 'center'
+              }}
+            >
+              This file is metadata/source, not a schematic canvas file.
+            </div>
+          )}
         </div>
 
         {/* ── Right Panel ── */}
@@ -234,14 +449,33 @@ function App() {
             selectedComponent={selectedComponent}
             connections={relevantConnections}
             activeFileContent={activeFileContent}
-            activeFilePath={activeFilePath || 'main.tsx'}
+            activeFilePath={activeFilePath || MAIN_SCHEMATIC_PATH}
+            activeFileType={activeFileType}
             placedComponents={placedComponents}
             onPropertyChange={(componentId, propName, value) => {
               const component = placedComponents.find(c => c.id === componentId)
               if (component) {
+                if (propName === 'name') {
+                  const nextName = String(value || component.name)
+
+                  const netNameProps =
+                    component.catalogId === 'net'
+                      ? { name: nextName, netName: nextName }
+                      : component.catalogId === 'netport'
+                      ? { name: nextName, netName: nextName }
+                      : component.catalogId === 'netlabel'
+                      ? { net: nextName }
+                      : null
+
+                  updatePlacedComponent(componentId, {
+                    name: nextName,
+                    ...(netNameProps ? { props: netNameProps } : {})
+                  })
+                  return
+                }
+
                 updatePlacedComponent(componentId, {
-                  ...(propName === 'name' ? { name: String(value || component.name) } : {}),
-                  props: { ...component.props, [propName]: value }
+                  props: { [propName]: value }
                 })
               }
             }}

@@ -6,9 +6,10 @@ A modern, TSX-first schematic editor for circuit design. This editor treats TSX 
 
 ### 1. TSX as Source of Truth
 - The project is stored as TSX files, not JSON
-- `main.tsx` contains your circuit design
-- `lib/parts/*.tsx` contains reusable component definitions
-- `lib/patches/*.tsx` contains reusable subcircuit modules
+- The main schematic lives in schematics/main.tsx
+- Reusable symbols live in symbols/*.tsx
+- Reusable subcircuits live in subcircuits/*.tsx
+- Workspace metadata is stored in editor/meta.json and project.json
 
 ### 2. Catalog System
 - **Parts**: Individual components (resistors, capacitors, switches, ICs)
@@ -123,6 +124,13 @@ npm run dev
 ```
 
 The editor will open at http://localhost:3000
+
+Validation and build checks:
+
+```bash
+npm run validate:workspace
+npm run build
+```
 
 ### Usage
 

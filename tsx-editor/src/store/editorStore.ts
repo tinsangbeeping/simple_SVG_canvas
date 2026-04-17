@@ -3,9 +3,27 @@ import { getCatalogItem } from '../catalog'
 import { loadEditorMeta, saveEditorMeta, getNetAnchor, setNetAnchor } from './metaHelpers'
 import * as parser from '@babel/parser'
 import { WorkspaceData, StoredWorkspaceState } from '../types/workspace'
+import { PatchDefinition } from '../types/project'
+import {
+  classifyFilePath,
+  detectFileKind,
+  getFolderForDetectedFileKind,
+  isCanvasEditableFileType
+} from '../utils/fileClassification'
+import {
+  buildDependencyGraph,
+  buildImportedProjectState,
+  buildSubcircuitRegistry
+} from '../utils/projectManager'
+import {
+  createDefaultWorkspaceFsMap,
+  ensureWorkspaceFsMapDefaults,
+  exportWorkspaceJson,
+  importWorkspaceJson
+} from './workspaceFs'
 
 // Round 0 DEBUG — set to true in browser console: window.__NETPORT_DEBUG = true
-const NETPORT_DEBUG = () => !!(window as any).__NETPORT_DEBUG
+const NETPORT_DEBUG = () => typeof window !== 'undefined' && !!(window as any).__NETPORT_DEBUG
 import { ExposedPortSelection, FSMap, PlacedComponent, EditorState, SelectedPinRef, WireConnection } from '../types/catalog'
 import { getPinConfig } from '../types/schematic'
 import { SCHEMATIC_COORD_SCALE, pixelToSchematic, schematicToPixel } from '../utils/coordinateScale'
@@ -28,6 +46,7 @@ interface EditorStore extends EditorState {
   setFSMap: (fsMap: FSMap) => void
   setActiveFilePath: (filePath: string) => void
   openSubcircuitEditor: (name: string) => void
+  insertSubcircuitInstance: (name: string, options?: { schX?: number; schY?: number; filePath?: string }) => void
   goBackFile: () => void
   updateFile: (filePath: string, content: string) => void
   addPlacedComponent: (component: PlacedComponent) => void
@@ -57,58 +76,246 @@ interface EditorStore extends EditorState {
   generateProjectStructure: () => { parent: string; children: Record<string, string> }
   generateParentChildrenStructure: () => { parent: string; children: Record<string, string> }
   importTSXIntoActiveFile: (content: string) => void
+  importFilesBatch: (files: Array<{ fileName: string; content: string }>) => void
+  applyPatch: (patch: PatchDefinition) => void
   setCodeViewTab: (tab: 'source' | 'export') => void
   setExportPreview: (preview: { fileName: string; content: string } | null) => void
   // Workspace actions
-  createWorkspace: (name: string) => void
+  createWorkspace: (name?: string) => void
   switchWorkspace: (id: string) => void
   deleteWorkspace: (id: string) => void
   renameWorkspace: (id: string, name: string) => void
   importWorkspaceJSON: (json: string) => void
   exportWorkspaceJSON: () => string
+  importWorkspace: (payload: string, nameOverride?: string) => void
+  exportActiveWorkspace: () => string
   // File tab actions
   openFileTab: (filePath: string) => void
   closeFileTab: (filePath: string) => void
+  deleteFile: (filePath: string) => void
+  moveFile: (oldPath: string, newPath: string) => void
   // Undo/redo
   undo: () => void
   redo: () => void
   pushUndoSnapshot: () => void
 }
 
-const DEFAULT_MAIN_TSX = `export default () => (
-  <board width="50mm" height="50mm">
-    {/* Add components here */}
-  </board>
-)
-`
-
+const SCHEMATIC_MAIN_PATH = 'schematics/main.tsx'
+const LEGACY_MAIN_PATH = 'main.tsx'
 const DEFAULT_SUBCIRCUITS_INDEX = ''
+
+const isMainSchematicPath = (filePath: string): boolean => filePath === SCHEMATIC_MAIN_PATH || filePath === LEGACY_MAIN_PATH
+const isSchematicFilePath = (filePath: string): boolean => {
+  return isMainSchematicPath(filePath) || filePath.startsWith('schematics/')
+}
+
+const doesPathMatchDetectedKind = (filePath: string, kind: ReturnType<typeof detectFileKind>): boolean => {
+  if (kind === 'schematic') return isSchematicFilePath(filePath)
+  if (kind === 'subcircuit') return filePath.startsWith('subcircuits/')
+  if (kind === 'symbol') return filePath.startsWith('symbols/')
+  return true
+}
+
+const isCanvasEditableFilePath = (filePath: string): boolean => {
+  return isCanvasEditableFileType(classifyFilePath(filePath))
+}
+
+const validateFilePlacement = (filePath: string, content: string): void => {
+  const kind = detectFileKind(content)
+  if (kind === 'unknown') return
+
+  if (kind === 'schematic' && !isSchematicFilePath(filePath)) {
+    throw new Error('Board schematic files must live under schematics/.')
+  }
+
+  if (kind === 'subcircuit' && !filePath.startsWith('subcircuits/')) {
+    throw new Error('Subcircuit files must live under subcircuits/.')
+  }
+
+  if (kind === 'symbol' && !filePath.startsWith('symbols/')) {
+    throw new Error('Symbol files must live under symbols/.')
+  }
+}
+
+const getCanonicalFilePathForContent = (
+  requestedPath: string,
+  content: string,
+  fsMap: FSMap,
+  options?: { preserveRequestedPath?: boolean }
+): string => {
+  const normalizedRequestedPath = requestedPath === LEGACY_MAIN_PATH ? SCHEMATIC_MAIN_PATH : requestedPath
+  const kind = detectFileKind(content)
+
+  if (kind === 'unknown') {
+    return normalizedRequestedPath
+  }
+
+  if (options?.preserveRequestedPath && doesPathMatchDetectedKind(normalizedRequestedPath, kind)) {
+    return normalizedRequestedPath
+  }
+
+  if (kind === 'schematic' && isMainSchematicPath(normalizedRequestedPath)) {
+    return SCHEMATIC_MAIN_PATH
+  }
+
+  const folder = getFolderForDetectedFileKind(kind)
+  const fallbackBaseName = getFileBaseName(normalizedRequestedPath)
+  const rawBaseName = extractExportedIdentifier(content)
+    || (fallbackBaseName.toLowerCase() === 'main' ? 'ImportedThing' : fallbackBaseName)
+    || 'ImportedThing'
+  const safeBaseName = toSafeIdentifier(rawBaseName)
+  const candidate = `${folder}/${safeBaseName}.tsx`
+
+  if (candidate === normalizedRequestedPath || !fsMap[candidate]) {
+    return candidate
+  }
+
+  const usedNames = Object.keys(fsMap)
+    .filter(path => path.startsWith(`${folder}/`) && path.endsWith('.tsx'))
+    .map(path => path.replace(`${folder}/`, '').replace('.tsx', ''))
+
+  return `${folder}/${toUniqueName(safeBaseName, usedNames)}.tsx`
+}
+
+const reconcileFsMapStructure = (rawMap: FSMap): FSMap => {
+  let nextMap: FSMap = { ...rawMap }
+
+  Object.entries(rawMap).forEach(([filePath, content]) => {
+    if (!(filePath.endsWith('.tsx') || filePath === LEGACY_MAIN_PATH)) return
+
+    const kind = detectFileKind(content)
+    if (kind === 'unknown') {
+      if (filePath === LEGACY_MAIN_PATH && !nextMap[SCHEMATIC_MAIN_PATH]) {
+        nextMap[SCHEMATIC_MAIN_PATH] = content
+        delete nextMap[LEGACY_MAIN_PATH]
+      }
+      return
+    }
+
+    const desiredPath = getCanonicalFilePathForContent(filePath, content, nextMap, {
+      preserveRequestedPath: true
+    })
+
+    if (desiredPath !== filePath) {
+      delete nextMap[filePath]
+      nextMap[desiredPath] = content
+    }
+  })
+
+  return nextMap
+}
 
 const getDefaultImportPosition = (index: number): { schX: number; schY: number } => ({
   schX: 80 + (index % 4) * 140,
   schY: 80 + Math.floor(index / 4) * 100
 })
 
+const indentBlock = (content: string, spaces: number): string => {
+  const prefix = ' '.repeat(spaces)
+  return content.split('\n').map(line => `${prefix}${line}`).join('\n')
+}
+
+const getFileBaseName = (filePath: string): string => {
+  const fileName = filePath.split('/').pop() || 'ImportedThing.tsx'
+  return fileName.replace(/\.tsx$/, '')
+}
+
+const extractContainerBody = (content: string, tagName: 'board' | 'subcircuit' | 'symbol'): string | null => {
+  const match = content.match(new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`))
+  return match?.[1]?.trim() || null
+}
+
+const extractExportedIdentifier = (content: string): string | null => {
+  const functionMatch = content.match(/export\s+(?:default\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)/)
+  if (functionMatch?.[1]) {
+    return functionMatch[1]
+  }
+
+  const constMatches = [...content.matchAll(/export\s+const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/g)]
+  const preferredConst = constMatches.find(match => match[1] !== 'ports')
+  return preferredConst?.[1] || null
+}
+
+const extractPortsDeclaration = (content: string): string => {
+  const match = content.match(/export\s+const\s+ports\s*=\s*\[[\s\S]*?\]\s*as\s+const/)
+  return match?.[0] || 'export const ports = [] as const'
+}
+
+const buildBoardModule = (body: string): string => {
+  const content = body.trim() ? indentBlock(body.trim(), 4) : '    {/* Add components here */}'
+  return `export default () => (\n  <board width="50mm" height="50mm">\n${content}\n  </board>\n)\n`
+}
+
+const buildSubcircuitModule = (name: string, body: string, portsDeclaration?: string): string => {
+  const content = body.trim() ? indentBlock(body.trim(), 6) : '      {/* Add components here */}'
+  return `${portsDeclaration || 'export const ports = [] as const'}\n\nexport function ${name}(props: { name: string; schX?: number; schY?: number }) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n${content}\n    </subcircuit>\n  )\n}\n`
+}
+
+const buildSymbolModule = (name: string, body: string): string => {
+  const content = body.trim() ? indentBlock(body.trim(), 4) : '    <line x1="-8" y1="0" x2="8" y2="0" stroke="black" />'
+  return `export function ${name}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <symbol>\n${content}\n    </symbol>\n  )\n}\n`
+}
+
+const detectStandaloneImport = (content: string): { kind: 'schematic' | 'subcircuit' | 'symbol'; suggestedName: string } | null => {
+  const trimmed = content.trim()
+  const kind = detectFileKind(trimmed)
+  if (kind === 'unknown') return null
+
+  const exportedName = toSafeIdentifier(extractExportedIdentifier(trimmed) || 'ImportedThing')
+  return { kind, suggestedName: exportedName }
+}
+
 const normalizeImportedTSXContent = (content: string, activeFilePath: string): string => {
   const trimmed = content.trim()
+  const targetName = toSafeIdentifier(getFileBaseName(activeFilePath))
+  const detectedKind = detectFileKind(trimmed)
 
   if (!trimmed) {
-    return activeFilePath === 'main.tsx'
-      ? DEFAULT_MAIN_TSX
-      : `export function ${activeFilePath.replace('subcircuits/', '').replace('.tsx', '')}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n      {/* Add components here */}\n    </subcircuit>\n  )\n}\n`
+    if (isSchematicFilePath(activeFilePath)) {
+      return createDefaultWorkspaceFsMap()[SCHEMATIC_MAIN_PATH]
+    }
+
+    if (activeFilePath.startsWith('symbols/')) {
+      return buildSymbolModule(targetName, '')
+    }
+
+    return buildSubcircuitModule(targetName, '')
   }
 
-  if (/<board[\s>]/.test(trimmed) || /<subcircuit[\s>]/.test(trimmed)) {
-    return trimmed
+  if (detectedKind === 'schematic' || isSchematicFilePath(activeFilePath)) {
+    if (/<board[\s>]/.test(trimmed)) {
+      return trimmed
+    }
+
+    const boardBody = extractContainerBody(trimmed, 'board')
+    if (boardBody) {
+      return buildBoardModule(boardBody)
+    }
+
+    const subcircuitBody = extractContainerBody(trimmed, 'subcircuit')
+    if (subcircuitBody) {
+      return buildBoardModule(subcircuitBody)
+    }
+
+    const symbolBody = extractContainerBody(trimmed, 'symbol')
+    if (symbolBody) {
+      return buildBoardModule(symbolBody)
+    }
+
+    return buildBoardModule(trimmed)
   }
 
-  const indented = trimmed.split('\n').map(line => `    ${line}`).join('\n')
-  if (activeFilePath === 'main.tsx') {
-    return `export default () => (\n  <board width="50mm" height="50mm">\n${indented}\n  </board>\n)\n`
+  if (detectedKind === 'symbol' || activeFilePath.startsWith('symbols/')) {
+    const symbolBody = extractContainerBody(trimmed, 'symbol')
+    return buildSymbolModule(targetName, symbolBody || trimmed)
   }
 
-  const name = activeFilePath.replace('subcircuits/', '').replace('.tsx', '')
-  return `export function ${name}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n${trimmed.split('\n').map(line => `      ${line}`).join('\n')}\n    </subcircuit>\n  )\n}\n`
+  const subcircuitBody = extractContainerBody(trimmed, 'subcircuit')
+  if (subcircuitBody) {
+    return buildSubcircuitModule(targetName, subcircuitBody, extractPortsDeclaration(trimmed))
+  }
+
+  return buildSubcircuitModule(targetName, trimmed, extractPortsDeclaration(trimmed))
 }
 
 const toSafeIdentifier = (raw: string): string => {
@@ -128,42 +335,92 @@ const toUniqueName = (prefix: string, used: string[]): string => {
   return candidate
 }
 
+const makeWorkspaceId = (name: string): string => {
+  const base = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'workspace'
+  return `${base}-${Date.now()}`
+}
+
 const ensureFsMapDefaults = (rawMap: FSMap): FSMap => {
-  const fsMap = { ...rawMap }
-
-  if (!fsMap['main.tsx']) {
-    fsMap['main.tsx'] = DEFAULT_MAIN_TSX
-  }
-
+  const fsMap = regenerateSubcircuitIndex(reconcileFsMapStructure(ensureWorkspaceFsMapDefaults(rawMap)))
   if (!fsMap['subcircuits/index.ts']) {
     fsMap['subcircuits/index.ts'] = DEFAULT_SUBCIRCUITS_INDEX
   }
+  return fsMap
+}
 
-  if (!fsMap['editor/meta.json']) {
-    fsMap['editor/meta.json'] = JSON.stringify({ netAnchors: {} }, null, 2)
+const getWorkspaceDefaultFilePath = (fsMap: FSMap): string => {
+  if (fsMap[SCHEMATIC_MAIN_PATH]) return SCHEMATIC_MAIN_PATH
+  if (fsMap[LEGACY_MAIN_PATH]) return LEGACY_MAIN_PATH
+
+  const firstSchematicPath = Object.keys(fsMap).sort().find(path => isSchematicFilePath(path))
+  if (firstSchematicPath) return firstSchematicPath
+
+  const firstPath = Object.keys(fsMap).sort()[0]
+  return firstPath || SCHEMATIC_MAIN_PATH
+}
+
+const normalizeWorkspaceFileSelection = (
+  fsMap: FSMap,
+  activeFilePath?: string,
+  openFilePaths?: string[]
+): { activeFilePath: string; openFilePaths: string[] } => {
+  const resolvedMap = ensureFsMapDefaults(fsMap)
+  const fallbackPath = getWorkspaceDefaultFilePath(resolvedMap)
+  const normalizePath = (path: string): string => {
+    if (path === LEGACY_MAIN_PATH && resolvedMap[SCHEMATIC_MAIN_PATH]) {
+      return SCHEMATIC_MAIN_PATH
+    }
+
+    if (!resolvedMap[path]) {
+      const fileName = path.split('/').pop()
+      const relocatedPath = Object.keys(resolvedMap).find(candidate => candidate.endsWith(`/${fileName}`))
+      if (relocatedPath) return relocatedPath
+    }
+
+    return path
   }
 
-  // Migrate old patches/* files to subcircuits/*
-  Object.entries(rawMap).forEach(([path, content]) => {
-    if (path.startsWith('patches/') && path.endsWith('.tsx')) {
-      fsMap[path.replace('patches/', 'subcircuits/')] = content
-    }
-  })
+  const dedupedOpen = Array.from(new Set((openFilePaths || []).map(normalizePath)))
+    .filter(path => !!resolvedMap[path])
 
-  return fsMap
+  let resolvedActive = normalizePath(activeFilePath || fallbackPath)
+  if (!resolvedMap[resolvedActive]) {
+    resolvedActive = fallbackPath
+  }
+
+  const resolvedOpen = dedupedOpen.length > 0 ? dedupedOpen : [resolvedActive]
+  if (!resolvedOpen.includes(resolvedActive)) {
+    resolvedOpen.push(resolvedActive)
+  }
+
+  return {
+    activeFilePath: resolvedActive,
+    openFilePaths: resolvedOpen
+  }
+}
+
+const normalizeWorkspaceData = (workspace: WorkspaceData): WorkspaceData => {
+  const fsMap = ensureFsMapDefaults(workspace.fsMap || {})
+  const files = normalizeWorkspaceFileSelection(fsMap, workspace.activeFilePath, workspace.openFilePaths)
+  return {
+    ...workspace,
+    fsMap,
+    activeFilePath: files.activeFilePath,
+    openFilePaths: files.openFilePaths
+  }
 }
 
 const WORKSPACE_STORAGE_KEY = 'editor_workspaces'
 
 const createDefaultWorkspace = (fsMap?: FSMap): WorkspaceData => {
-  const map = fsMap || ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX })
-  return {
+  const map = fsMap || ensureFsMapDefaults(createDefaultWorkspaceFsMap('My Project'))
+  return normalizeWorkspaceData({
     id: 'project-current',
     name: 'My Project',
     fsMap: map,
-    openFilePaths: ['main.tsx'],
-    activeFilePath: 'main.tsx'
-  }
+    openFilePaths: [SCHEMATIC_MAIN_PATH],
+    activeFilePath: SCHEMATIC_MAIN_PATH
+  })
 }
 
 const saveWorkspacesToStorage = (workspaces: Record<string, WorkspaceData>, activeWorkspaceId: string) => {
@@ -192,15 +449,9 @@ const loadWorkspacesFromStorage = (): StoredWorkspaceState => {
     const newStored = localStorage.getItem(WORKSPACE_STORAGE_KEY)
     if (newStored) {
       const parsed: StoredWorkspaceState = JSON.parse(newStored)
-      // Ensure each workspace has the required defaults
+      // Ensure each workspace has required defaults and valid file selections.
       for (const id of Object.keys(parsed.workspaces)) {
-        parsed.workspaces[id].fsMap = ensureFsMapDefaults(parsed.workspaces[id].fsMap || {})
-        if (!parsed.workspaces[id].openFilePaths) {
-          parsed.workspaces[id].openFilePaths = ['main.tsx']
-        }
-        if (!parsed.workspaces[id].activeFilePath) {
-          parsed.workspaces[id].activeFilePath = 'main.tsx'
-        }
+        parsed.workspaces[id] = normalizeWorkspaceData(parsed.workspaces[id])
       }
       return parsed
     }
@@ -226,7 +477,7 @@ const loadWorkspacesFromStorage = (): StoredWorkspaceState => {
 
 const loadFSMapFromStorage = (): FSMap => {
   const { workspaces, activeWorkspaceId } = loadWorkspacesFromStorage()
-  return workspaces[activeWorkspaceId]?.fsMap || ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX })
+  return workspaces[activeWorkspaceId]?.fsMap || ensureFsMapDefaults(createDefaultWorkspaceFsMap('My Project'))
 }
 
 const extractExplicitSubcircuitPorts = (content: string): string[] | null => {
@@ -272,7 +523,8 @@ const extractExplicitSubcircuitPorts = (content: string): string[] | null => {
 const warnedSubcircuitPortFallback = new Set<string>()
 
 const getSubcircuitPorts = (fsMap: FSMap, name: string): string[] => {
-  const filePath = `subcircuits/${name}.tsx`
+  const registry = buildSubcircuitRegistry(fsMap)
+  const filePath = registry[name]?.filePath || `subcircuits/${name}.tsx`
   const content = fsMap[filePath] || ''
 
   const explicitPorts = extractExplicitSubcircuitPorts(content)
@@ -297,12 +549,14 @@ const getSubcircuitPorts = (fsMap: FSMap, name: string): string[] => {
 }
 
 const regenerateSubcircuitIndex = (fsMap: FSMap): FSMap => {
-  const names = Object.keys(fsMap)
-    .filter(path => path.startsWith('subcircuits/') && path.endsWith('.tsx'))
-    .map(path => path.replace('subcircuits/', '').replace('.tsx', ''))
-    .sort()
-
-  const indexContent = names.map(name => `export { ${name} } from "./${name}"`).join('\n')
+  const registry = buildSubcircuitRegistry(fsMap)
+  const indexContent = Object.entries(registry)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, info]) => {
+      const stem = info.filePath.replace(/^subcircuits\//, '').replace(/\.tsx$/, '')
+      return `export { ${name} } from "./${stem}"`
+    })
+    .join('\n')
 
   return {
     ...fsMap,
@@ -310,10 +564,82 @@ const regenerateSubcircuitIndex = (fsMap: FSMap): FSMap => {
   }
 }
 
+const getWorkspaceSymbolNames = (fsMap: FSMap): Set<string> => {
+  return new Set(
+    Object.keys(fsMap)
+      .filter(path => path.startsWith('symbols/') && path.endsWith('.tsx'))
+      .map(path => path.replace('symbols/', '').replace('.tsx', ''))
+  )
+}
+
+const getRelativeImportPath = (fromFilePath: string, toFilePath: string): string => {
+  const fromParts = fromFilePath.split('/').slice(0, -1)
+  const toParts = toFilePath.replace(/\.(tsx|ts)$/, '').split('/')
+
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift()
+    toParts.shift()
+  }
+
+  const up = fromParts.map(() => '..')
+  const relative = [...up, ...toParts].join('/')
+  return relative.startsWith('.') ? relative : `./${relative}`
+}
+
 const parseComponentRef = (ref: string): { componentName: string; pinName: string } | null => {
   const m = ref.match(/^\.([A-Za-z_][A-Za-z0-9_]*)\s*>\s*\.([A-Za-z_][A-Za-z0-9_]*)$/)
   if (!m) return null
   return { componentName: m[1], pinName: m[2] }
+}
+
+const normalizePatchComponentSpec = (
+  component: PatchDefinition['components'][number],
+  index: number
+): { subcircuit: string; instanceName?: string; props?: Record<string, any>; schX?: number; schY?: number } => {
+  if (typeof component === 'string') {
+    return {
+      subcircuit: component,
+      instanceName: `${component}${index + 1}`
+    }
+  }
+
+  return {
+    subcircuit: component.type || component.subcircuit || '',
+    instanceName: component.instanceName,
+    props: component.props,
+    schX: component.schX,
+    schY: component.schY
+  }
+}
+
+const parsePatchWireSpec = (
+  spec: PatchDefinition['wiring'][number]
+): { from: string; to: string } | null => {
+  if (typeof spec !== 'string') {
+    return spec
+  }
+
+  const fromMatch = spec.match(/from="([^"]+)"/)
+  const toMatch = spec.match(/to="([^"]+)"/)
+  if (fromMatch && toMatch) {
+    return { from: fromMatch[1], to: toMatch[1] }
+  }
+
+  const arrowMatch = spec.split(/\s*->\s*/)
+  if (arrowMatch.length === 2) {
+    const normalizeEndpoint = (value: string) => {
+      const trimmed = value.trim()
+      const dotForm = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/)
+      return dotForm ? `.${dotForm[1]} > .${dotForm[2]}` : trimmed
+    }
+
+    return {
+      from: normalizeEndpoint(arrowMatch[0]),
+      to: normalizeEndpoint(arrowMatch[1])
+    }
+  }
+
+  return null
 }
 
 class NetUnionFind {
@@ -542,9 +868,11 @@ const parseSchExpr = (expr: string, isSubcircuitFile: boolean): number => {
 
 const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: PlacedComponent[]; wires: WireConnection[] } => {
   const content = fsMap[filePath] || ''
-  const isMain = filePath === 'main.tsx'
+  const isSchematicFile = isSchematicFilePath(filePath)
   const isSubcircuitFile = filePath.startsWith('subcircuits/')
-  const bodyMatch = isMain
+  const symbolNames = getWorkspaceSymbolNames(fsMap)
+  const subcircuitRegistry = buildSubcircuitRegistry(fsMap)
+  const bodyMatch = isSchematicFile
     ? content.match(/<board[^>]*>([\s\S]*?)<\/board>/)
     : content.match(/<subcircuit[^>]*>([\s\S]*?)<\/subcircuit>/)
 
@@ -659,18 +987,27 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     const isKnownPart = !!getCatalogItem(effectiveCatalogId)
     const id = `comp-${filePath}-${name}-${components.length}`
 
-    if (!isKnownPart) {
-      const ports = getSubcircuitPorts(fsMap, tagName)
+    const isSymbolReference = symbolNames.has(tagName)
+    const subcircuitDefinition = subcircuitRegistry[tagName]
+
+    if (!isKnownPart && !isSymbolReference) {
+      const ports = subcircuitDefinition?.ports || getSubcircuitPorts(fsMap, tagName)
       props.subcircuitName = tagName
+      props.subcircuitPath = subcircuitDefinition?.filePath || `subcircuits/${tagName}.tsx`
       props.ports = ports
     }
 
     const component: PlacedComponent = {
       id,
-      catalogId: isKnownPart ? effectiveCatalogId : 'subcircuit-instance',
+      catalogId: isKnownPart
+        ? effectiveCatalogId
+        : isSymbolReference
+        ? 'symbol-instance'
+        : 'subcircuit-instance',
       name,
       props: {
         ...props,
+        ...(isSymbolReference ? { symbolName: tagName } : {}),
         schX: props.schX ?? 0,
         schY: props.schY ?? 0
       },
@@ -886,9 +1223,66 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   return { components: normalizeComponentsToViewport(merged.components), wires: merged.wires }
 }
 
+const getCanvasStateForFile = (filePath: string, fsMap: FSMap): { components: PlacedComponent[]; wires: WireConnection[] } => {
+  if (!isCanvasEditableFilePath(filePath)) {
+    return { components: [], wires: [] }
+  }
+
+  return parseFileToCanvas(filePath, fsMap)
+}
+
+const syncActiveCanvasFile = (state: Pick<EditorState, 'activeFilePath' | 'fsMap' | 'placedComponents' | 'wires'>): FSMap => {
+  if (!isCanvasEditableFilePath(state.activeFilePath)) {
+    return regenerateSubcircuitIndex({ ...state.fsMap })
+  }
+
+  const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
+  return regenerateSubcircuitIndex({
+    ...state.fsMap,
+    [state.activeFilePath]: currentContent
+  })
+}
+
+const buildPersistedCanvasState = (
+  state: Pick<EditorState, 'activeFilePath' | 'fsMap' | 'placedComponents' | 'wires' | 'workspaces' | 'activeWorkspaceId' | 'openFilePaths'>,
+  overrides: Partial<Pick<EditorState, 'activeFilePath' | 'fsMap' | 'placedComponents' | 'wires' | 'openFilePaths'>>
+) => {
+  const activeFilePath = overrides.activeFilePath ?? state.activeFilePath
+  const placedComponents = overrides.placedComponents ?? state.placedComponents
+  const wires = overrides.wires ?? state.wires
+  const openFilePaths = overrides.openFilePaths ?? state.openFilePaths
+  const fsMapBase = overrides.fsMap ?? state.fsMap
+
+  const fsMap = isCanvasEditableFilePath(activeFilePath)
+    ? syncActiveCanvasFile({ activeFilePath, fsMap: fsMapBase, placedComponents, wires })
+    : regenerateSubcircuitIndex({ ...fsMapBase })
+
+  const workspaces = {
+    ...state.workspaces,
+    [state.activeWorkspaceId]: {
+      ...state.workspaces[state.activeWorkspaceId],
+      fsMap,
+      activeFilePath,
+      openFilePaths
+    }
+  }
+
+  return {
+    activeFilePath,
+    placedComponents,
+    wires,
+    openFilePaths,
+    fsMap,
+    workspaces
+  }
+}
+
 const getComponentTagName = (component: PlacedComponent): string => {
   if (component.catalogId === 'subcircuit-instance') {
     return component.props.subcircuitName || component.name
+  }
+  if (component.catalogId === 'symbol-instance') {
+    return component.props.symbolName || component.name
   }
   if (component.catalogId === 'customchip') {
     return 'chip'
@@ -923,6 +1317,7 @@ const toAttrList = (props: Record<string, any>): string[] => {
       'schY',
       'schRotation',
       'subcircuitName',
+      'subcircuitPath',
       'ports',
       'netName',
       'netId',
@@ -1105,8 +1500,8 @@ const normalizeLogicalNets = (
 }
 
 const generateFileTSX = (filePath: string, components: PlacedComponent[], wires: WireConnection[]): string => {
-  const isMain = filePath === 'main.tsx'
-  const inSubcircuit = !isMain
+  const isSchematicFile = isSchematicFilePath(filePath)
+  const inSubcircuit = !isSchematicFile
   const lines: string[] = []
 
   const merged = mergeElectricalNets(components, wires)
@@ -1137,18 +1532,38 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   )
   const body = lines.length > 0 ? lines.join('\n') : '    {/* Add components here */}'
 
-  if (isMain) {
-    const importSet = new Set(
+  if (isSchematicFile) {
+    const subImportMap = new Map<string, string>()
+    components
+      .filter(c => c.catalogId === 'subcircuit-instance')
+      .forEach((component) => {
+        const name = String(component.props.subcircuitName || '').trim()
+        const importPath = String(component.props.subcircuitPath || `subcircuits/${name}.tsx`).trim()
+        if (name && importPath) {
+          subImportMap.set(name, importPath)
+        }
+      })
+
+    const symbolImportSet = new Set(
       components
-        .filter(c => c.catalogId === 'subcircuit-instance')
-        .map(c => c.props.subcircuitName as string)
+        .filter(c => c.catalogId === 'symbol-instance')
+        .map(c => c.props.symbolName as string)
         .filter(Boolean)
     )
 
-    const imports = [...importSet]
+    const subImports = [...subImportMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, importFilePath]) => `import { ${name} } from "${getRelativeImportPath(filePath, importFilePath)}"`)
+    const symbolImports = [...symbolImportSet]
       .sort()
-      .map(name => `import { ${name} } from "./${name}"`)
-      .join('\n')
+      .map(name => {
+        const importPrefix = filePath.startsWith('schematics/') ? '../symbols' : './'
+        return importPrefix === './'
+          ? `import { ${name} } from "./${name}"`
+          : `import { ${name} } from "${importPrefix}/${name}"`
+      })
+
+    const imports = [...subImports, ...symbolImports].join('\n')
 
     return `${imports ? `${imports}\n\n` : ''}export default () => (\n  <board width="50mm" height="50mm">\n${body}\n  </board>\n)\n`
   }
@@ -1157,8 +1572,7 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   return `export function ${subcircuitName}(props: { name: string; schX?: number; schY?: number }) {\n  const x = props.schX ?? 0\n  const y = props.schY ?? 0\n\n  return (\n    <subcircuit name={props.name}>\n${body}\n    </subcircuit>\n  )\n}\n`
 }
 
-const generateFlatMainTSX = (fsMap: FSMap): string => {
-  const rootPath = 'main.tsx'
+const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): string => {
   const flatComponents: PlacedComponent[] = []
   const flatWires: WireConnection[] = []
   const netEndpointByName = new Map<string, string>()
@@ -1302,7 +1716,10 @@ const generateFlatMainTSX = (fsMap: FSMap): string => {
     })
   }
 
-  expandFile(rootPath, 0, 0, '')
+  const fallbackRootPath = Object.keys(fsMap).sort().find(path => isSchematicFilePath(path)) || SCHEMATIC_MAIN_PATH
+  const effectiveRootPath = fsMap[rootPath] ? rootPath : fallbackRootPath
+
+  expandFile(effectiveRootPath, 0, 0, '')
 
   const renderedComponents = flatComponents
     .map(component => createComponentSnippet(component, false))
@@ -1326,12 +1743,12 @@ const initialWorkspaceState = loadWorkspacesFromStorage()
 const initialActiveWsId = initialWorkspaceState.activeWorkspaceId
 const initialWorkspace = initialWorkspaceState.workspaces[initialActiveWsId] || createDefaultWorkspace()
 const initialFsMap = initialWorkspace.fsMap
-const initialCanvas = parseFileToCanvas(initialWorkspace.activeFilePath || 'main.tsx', initialFsMap)
+const initialCanvas = getCanvasStateForFile(initialWorkspace.activeFilePath || SCHEMATIC_MAIN_PATH, initialFsMap)
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
   // Initial state - load from localStorage
   fsMap: initialFsMap,
-  activeFilePath: initialWorkspace.activeFilePath || 'main.tsx',
+  activeFilePath: initialWorkspace.activeFilePath || SCHEMATIC_MAIN_PATH,
   breadcrumbStack: [],
   selectedComponentIds: [],
   codeViewTab: 'source',
@@ -1356,7 +1773,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   // Workspace model
   workspaces: initialWorkspaceState.workspaces,
   activeWorkspaceId: initialActiveWsId,
-  openFilePaths: initialWorkspace.openFilePaths || ['main.tsx'],
+  openFilePaths: initialWorkspace.openFilePaths || [SCHEMATIC_MAIN_PATH],
   // Undo/redo stacks
   undoStack: [],
   redoStack: [],
@@ -1380,31 +1797,46 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     get().regenerateTSX()
 
     let fsMap = { ...state.fsMap }
-    if (!fsMap[filePath] && filePath.startsWith('subcircuits/')) {
-      const name = filePath.replace('subcircuits/', '').replace('.tsx', '')
-      fsMap[filePath] = `export function ${name}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n      {/* Add components here */}\n    </subcircuit>\n  )\n}\n`
+    if (!fsMap[filePath]) {
+      if (filePath.startsWith('subcircuits/')) {
+        const name = filePath.replace('subcircuits/', '').replace('.tsx', '')
+        fsMap[filePath] = buildSubcircuitModule(name, '')
+      } else if (filePath.startsWith('symbols/')) {
+        const name = filePath.replace('symbols/', '').replace('.tsx', '')
+        fsMap[filePath] = buildSymbolModule(name, '')
+      } else if (isSchematicFilePath(filePath)) {
+        fsMap[filePath] = buildBoardModule('')
+      }
+
       fsMap = regenerateSubcircuitIndex(fsMap)
       saveFSMapToStorage(fsMap)
     }
 
-    const parsed = parseFileToCanvas(filePath, fsMap)
-    set({
-      fsMap,
-      activeFilePath: filePath,
-      placedComponents: parsed.components,
-      wires: parsed.wires,
-      selectedComponentIds: [],
-      wiringStart: null,
-      cursorNearPin: null
-    })
-    // Open this file as a tab if not already open
-    const openFilePaths = state.openFilePaths.includes(filePath)
+    if (!fsMap[filePath]) {
+      return
+    }
+
+    const nextOpenFilePaths = state.openFilePaths.includes(filePath)
       ? state.openFilePaths
       : [...state.openFilePaths, filePath]
+    const normalizedFiles = normalizeWorkspaceFileSelection(fsMap, filePath, nextOpenFilePaths)
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap,
+        activeFilePath: normalizedFiles.activeFilePath,
+        openFilePaths: normalizedFiles.openFilePaths
+      }
+    }
+
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, fsMap)
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
     set({
       fsMap,
-      activeFilePath: filePath,
-      openFilePaths,
+      activeFilePath: normalizedFiles.activeFilePath,
+      openFilePaths: normalizedFiles.openFilePaths,
+      workspaces: nextWorkspaces,
       placedComponents: parsed.components,
       wires: parsed.wires,
       selectedComponentIds: [],
@@ -1414,9 +1846,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   openSubcircuitEditor: (name) => {
-    const safe = toSafeIdentifier(name)
-    const filePath = `subcircuits/${safe}.tsx`
     const state = get()
+    const safe = toSafeIdentifier(name)
+    const registry = buildSubcircuitRegistry(state.fsMap)
+    const filePath = registry[name]?.filePath || `subcircuits/${safe}.tsx`
 
     if (state.activeFilePath === filePath) return
 
@@ -1424,7 +1857,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     let fsMap = { ...state.fsMap }
     if (!fsMap[filePath]) {
-      fsMap[filePath] = `export function ${safe}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <subcircuit name={props.name}>\n      {/* Add components here */}\n    </subcircuit>\n  )\n}\n`
+      fsMap[filePath] = buildSubcircuitModule(safe, '', 'export const ports = [] as const')
       fsMap = regenerateSubcircuitIndex(fsMap)
       saveFSMapToStorage(fsMap)
     }
@@ -1442,6 +1875,168 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     })
   },
 
+  insertSubcircuitInstance: (name, options) => {
+    const state = get()
+    const registry = buildSubcircuitRegistry(state.fsMap)
+    const subcircuit = registry[name]
+
+    if (!subcircuit) {
+      const message = `Subcircuit "${name}" is not a valid reusable block yet.`
+      if (typeof window !== 'undefined') {
+        window.alert(message)
+      } else {
+        console.warn(message)
+      }
+      return
+    }
+
+    if (!isSchematicFilePath(state.activeFilePath)) {
+      get().setActiveFilePath(subcircuit.filePath)
+      return
+    }
+
+    const existingNames = new Set(state.placedComponents.map(component => component.name))
+    let suffix = 1
+    let uniqueName = `${name}${suffix}`
+    while (existingNames.has(uniqueName)) {
+      suffix += 1
+      uniqueName = `${name}${suffix}`
+    }
+
+    const fallbackPosition = getDefaultImportPosition(state.placedComponents.length)
+    const schX = options?.schX ?? fallbackPosition.schX
+    const schY = options?.schY ?? fallbackPosition.schY
+
+    get().addPlacedComponent({
+      id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      catalogId: 'subcircuit-instance',
+      name: uniqueName,
+      props: {
+        subcircuitName: name,
+        subcircuitPath: options?.filePath || subcircuit.filePath,
+        ports: subcircuit.ports,
+        schX,
+        schY
+      },
+      tsxSnippet: `<${name} name="${uniqueName}" schX={${schX}} schY={${schY}} />`
+    })
+
+    set({ selectedComponentIds: [] })
+  },
+
+  applyPatch: (patch) => {
+    const state = get()
+    if (!isSchematicFilePath(state.activeFilePath)) {
+      throw new Error('Patches can only be applied to a schematic board file.')
+    }
+
+    const registry = buildSubcircuitRegistry(state.fsMap)
+    const existingNames = new Set(state.placedComponents.map(component => component.name))
+    const aliasToInstance = new Map<string, string>()
+    const addedComponents: PlacedComponent[] = []
+    const offsetX = Number(patch.layout?.offsetX || 0)
+    const offsetY = Number(patch.layout?.offsetY || 0)
+
+    patch.components.forEach((component, index) => {
+      const spec = normalizePatchComponentSpec(component, index)
+      if (!spec.subcircuit) {
+        throw new Error(`Invalid patch component at index ${index}`)
+      }
+
+      const subcircuit = registry[spec.subcircuit]
+      if (!subcircuit) {
+        throw new Error(`Missing subcircuit: ${spec.subcircuit}`)
+      }
+
+      let instanceName = spec.instanceName?.trim() || `${spec.subcircuit}${index + 1}`
+      while (existingNames.has(instanceName)) {
+        instanceName = `${instanceName}_${existingNames.size}`
+      }
+      existingNames.add(instanceName)
+      aliasToInstance.set(spec.subcircuit, instanceName)
+      aliasToInstance.set(instanceName, instanceName)
+
+      const fallbackPosition = getDefaultImportPosition(state.placedComponents.length + index)
+      const schX = (spec.schX ?? fallbackPosition.schX) + offsetX
+      const schY = (spec.schY ?? fallbackPosition.schY) + offsetY
+
+      addedComponents.push({
+        id: `patch-${patch.id}-${Date.now()}-${index}`,
+        catalogId: 'subcircuit-instance',
+        name: instanceName,
+        props: {
+          ...(spec.props || {}),
+          name: instanceName,
+          subcircuitName: spec.subcircuit,
+          subcircuitPath: subcircuit.filePath,
+          ports: subcircuit.ports,
+          schX,
+          schY
+        },
+        tsxSnippet: `<${spec.subcircuit} name="${instanceName}" schX={${schX}} schY={${schY}} />`
+      })
+    })
+
+    const allComponents = [...state.placedComponents, ...addedComponents]
+    const nameToId = new Map(allComponents.map(component => [component.name, component.id]))
+    const componentPorts = new Map(allComponents.map(component => [component.name, new Set(((component.props.ports as string[] | undefined) || []).map(String))]))
+
+    const addedWires: WireConnection[] = patch.wiring.flatMap((wireSpec, index) => {
+      const parsedSpec = parsePatchWireSpec(wireSpec)
+      if (!parsedSpec) {
+        throw new Error(`Invalid patch wire at index ${index}`)
+      }
+
+      const fromRef = parseComponentRef(parsedSpec.from)
+      const toRef = parseComponentRef(parsedSpec.to)
+      if (!fromRef || !toRef) {
+        throw new Error(`Patch wire endpoints must use component.pin format: ${parsedSpec.from} -> ${parsedSpec.to}`)
+      }
+
+      const fromComponentName = aliasToInstance.get(fromRef.componentName) || fromRef.componentName
+      const toComponentName = aliasToInstance.get(toRef.componentName) || toRef.componentName
+      const fromId = nameToId.get(fromComponentName)
+      const toId = nameToId.get(toComponentName)
+      if (!fromId || !toId) {
+        throw new Error(`Patch wiring references missing instance: ${parsedSpec.from} -> ${parsedSpec.to}`)
+      }
+
+      const fromPorts = componentPorts.get(fromComponentName)
+      const toPorts = componentPorts.get(toComponentName)
+      if (fromPorts && fromPorts.size > 0 && !fromPorts.has(fromRef.pinName)) {
+        throw new Error(`Invalid patch wiring pin: ${fromComponentName}.${fromRef.pinName}`)
+      }
+      if (toPorts && toPorts.size > 0 && !toPorts.has(toRef.pinName)) {
+        throw new Error(`Invalid patch wiring pin: ${toComponentName}.${toRef.pinName}`)
+      }
+
+      return [{
+        id: `patch-wire-${patch.id}-${Date.now()}-${index}`,
+        from: { componentId: fromId, pinName: fromRef.pinName },
+        to: { componentId: toId, pinName: toRef.pinName },
+        tsxSnippet: ''
+      }]
+    })
+
+    const wires = [...state.wires, ...addedWires]
+    const persisted = buildPersistedCanvasState(state, {
+      placedComponents: allComponents,
+      wires
+    })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+
+    set({
+      placedComponents: allComponents,
+      wires,
+      selectedComponentIds: addedComponents.map(component => component.id),
+      wiringStart: null,
+      cursorNearPin: null,
+      exportPreview: null,
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
+    })
+  },
+
   goBackFile: () => {
     const state = get()
     if (state.breadcrumbStack.length === 0) return
@@ -1450,7 +2045,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     const previous = state.breadcrumbStack[state.breadcrumbStack.length - 1]
     const nextStack = state.breadcrumbStack.slice(0, -1)
-    const parsed = parseFileToCanvas(previous, state.fsMap)
+    const parsed = getCanvasStateForFile(previous, state.fsMap)
 
     set({
       activeFilePath: previous,
@@ -1464,32 +2059,71 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
 
   updateFile: (filePath, content) => set((state) => {
-    const newFsMap = regenerateSubcircuitIndex({
-      ...state.fsMap,
-      [filePath]: content
+    const nextFsMapBase = { ...state.fsMap }
+    const targetFilePath = getCanonicalFilePathForContent(filePath, content, nextFsMapBase, {
+      preserveRequestedPath: true
     })
+
+    delete nextFsMapBase[filePath]
+    nextFsMapBase[targetFilePath] = content
+
+    const newFsMap = regenerateSubcircuitIndex(ensureFsMapDefaults(nextFsMapBase))
+    const normalizedFiles = normalizeWorkspaceFileSelection(
+      newFsMap,
+      state.activeFilePath === filePath ? targetFilePath : state.activeFilePath,
+      state.openFilePaths.map(path => path === filePath ? targetFilePath : path)
+    )
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, newFsMap)
+
     const nextWorkspaces = {
       ...state.workspaces,
-      [state.activeWorkspaceId]: { ...state.workspaces[state.activeWorkspaceId], fsMap: newFsMap }
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap: newFsMap,
+        activeFilePath: normalizedFiles.activeFilePath,
+        openFilePaths: normalizedFiles.openFilePaths
+      }
     }
+
     saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
-    return { fsMap: newFsMap, workspaces: nextWorkspaces }
+    return {
+      fsMap: newFsMap,
+      workspaces: nextWorkspaces,
+      activeFilePath: normalizedFiles.activeFilePath,
+      openFilePaths: normalizedFiles.openFilePaths,
+      placedComponents: parsed.components,
+      wires: parsed.wires
+    }
   }),
 
   addPlacedComponent: (component) => set((state) => {
-    const newComponents = [...state.placedComponents, component]
-    setTimeout(() => get().regenerateTSX(), 0)
-    return { placedComponents: newComponents }
+    const placedComponents = [...state.placedComponents, component]
+    const persisted = buildPersistedCanvasState(state, { placedComponents })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+    return {
+      placedComponents,
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
+    }
   }),
 
   updatePlacedComponent: (id, updates) => set((state) => {
-    const newComponents = state.placedComponents.map((component) =>
-      component.id === id ? { ...component, ...updates } : component
-    )
+    const placedComponents = state.placedComponents.map((component) => {
+      if (component.id !== id) return component
 
-    // Persist netport position into editor/meta.json so it survives regeneration
-    const updatedComp = newComponents.find(c => c.id === id)
-    let nextFsMap = state.fsMap
+      const mergedProps = updates.props
+        ? { ...component.props, ...updates.props }
+        : component.props
+
+      return {
+        ...component,
+        ...updates,
+        props: mergedProps
+      }
+    })
+
+    const updatedComp = placedComponents.find(c => c.id === id)
+    let fsMap = state.fsMap
     if (
       updatedComp?.catalogId === 'netport' &&
       updates.props?.schX !== undefined &&
@@ -1503,13 +2137,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           schY: updates.props.schY
         })
         if (NETPORT_DEBUG()) console.log('[netport:saved-to-meta]', { netName, schX: updates.props.schX, schY: updates.props.schY })
-        nextFsMap = saveEditorMeta(state.fsMap, nextMeta)
-        saveFSMapToStorage(nextFsMap)
+        fsMap = saveEditorMeta(state.fsMap, nextMeta)
       }
     }
 
-    setTimeout(() => get().regenerateTSX(), 0)
-    return { placedComponents: newComponents, fsMap: nextFsMap }
+    const persisted = buildPersistedCanvasState(state, { placedComponents, fsMap })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+    return {
+      placedComponents,
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
+    }
   }),
 
   rotateSelectedComponents: () => {
@@ -1535,19 +2173,27 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
     })
 
-    set({ placedComponents: nextComponents })
-    setTimeout(() => get().regenerateTSX(), 0)
+    const persisted = buildPersistedCanvasState(state, { placedComponents: nextComponents })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+    set({
+      placedComponents: nextComponents,
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
+    })
   },
 
   removePlacedComponent: (id) => set((state) => {
-    const newComponents = state.placedComponents.filter((comp) => comp.id !== id)
-    const newWires = state.wires.filter((wire) => wire.from.componentId !== id && wire.to.componentId !== id)
-    const newSelectedIds = state.selectedComponentIds.filter(selectedId => selectedId !== id)
-    setTimeout(() => get().regenerateTSX(), 0)
-    return { 
-      placedComponents: newComponents,
-      wires: newWires,
-      selectedComponentIds: newSelectedIds
+    const placedComponents = state.placedComponents.filter((comp) => comp.id !== id)
+    const wires = state.wires.filter((wire) => wire.from.componentId !== id && wire.to.componentId !== id)
+    const selectedComponentIds = state.selectedComponentIds.filter(selectedId => selectedId !== id)
+    const persisted = buildPersistedCanvasState(state, { placedComponents, wires })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+    return {
+      placedComponents,
+      wires,
+      selectedComponentIds,
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
     }
   }),
 
@@ -1564,13 +2210,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       )
     }
 
+    const persisted = buildPersistedCanvasState(state, {
+      placedComponents: newComponents,
+      wires: newWires
+    })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+
     set({ 
       placedComponents: newComponents,
       wires: newWires,
-      selectedComponentIds: []
+      selectedComponentIds: [],
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
     })
-    
-    setTimeout(() => get().regenerateTSX(), 0)
   },
 
   setSelectedComponents: (ids) => set({ selectedComponentIds: ids }),
@@ -1664,14 +2316,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       })
       .filter((wire): wire is WireConnection => wire !== null)
 
-    set({
-      placedComponents: [...state.placedComponents, ...pastedComponents],
-      wires: [...state.wires, ...pastedWires],
-      selectedComponentIds: pastedComponents.map(component => component.id),
-      pasteCount: nextPasteCount
-    })
+    const placedComponents = [...state.placedComponents, ...pastedComponents]
+    const wires = [...state.wires, ...pastedWires]
+    const persisted = buildPersistedCanvasState(state, { placedComponents, wires })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
 
-    setTimeout(() => get().regenerateTSX(), 0)
+    set({
+      placedComponents,
+      wires,
+      selectedComponentIds: pastedComponents.map(component => component.id),
+      pasteCount: nextPasteCount,
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
+    })
   },
 
   setViewport: (viewport) => set((state) => ({
@@ -1706,12 +2363,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       tsxSnippet: `<trace from=".${fromComp.name} > .${state.wiringStart.pinName}" to=".${toComp.name} > .${pinName}" />`
     }
 
-    set((state) => ({
-      wires: [...state.wires, newWire],
-      wiringStart: null
-    }))
-
-    setTimeout(() => get().regenerateTSX(), 0)
+    set((state) => {
+      const wires = [...state.wires, newWire]
+      const persisted = buildPersistedCanvasState(state, { wires })
+      saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+      return {
+        wires,
+        wiringStart: null,
+        fsMap: persisted.fsMap,
+        workspaces: persisted.workspaces
+      }
+    })
   },
 
   cancelWiring: () => set({ wiringStart: null }),
@@ -1733,9 +2395,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
     }
 
-    const newWires = state.wires.filter(w => w.id !== wireId)
-    setTimeout(() => get().regenerateTSX(), 0)
-    return { wires: newWires }
+    const wires = state.wires.filter(w => w.id !== wireId)
+    const persisted = buildPersistedCanvasState(state, { wires })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+    return {
+      wires,
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
+    }
   }),
 
   disconnectPin: (componentId, pinName) => set((state) => {
@@ -1764,9 +2431,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
     }
 
-    const newWires = state.wires.filter(w => !removedWireIds.has(w.id))
-    setTimeout(() => get().regenerateTSX(), 0)
-    return { wires: newWires }
+    const wires = state.wires.filter(w => !removedWireIds.has(w.id))
+    const persisted = buildPersistedCanvasState(state, { wires })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+    return {
+      wires,
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
+    }
   }),
 
   beginSubcircuitPinSelection: (componentIds) => {
@@ -1917,13 +2589,19 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
     ]
 
+    const persisted = buildPersistedCanvasState(state, {
+      placedComponents: nextComponents,
+      wires: nextWires
+    })
+    saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
+
     set({
       placedComponents: nextComponents,
       wires: nextWires,
-      selectedComponentIds: [componentId]
+      selectedComponentIds: [componentId],
+      fsMap: persisted.fsMap,
+      workspaces: persisted.workspaces
     })
-
-    setTimeout(() => get().regenerateTSX(), 0)
   },
 
   createSubcircuit: (name, componentIds, exposedPorts) => {
@@ -2081,10 +2759,29 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       ...nextFsMap,
       [state.activeFilePath]: newActiveContent
     })
-    saveFSMapToStorage(nextFsMap)
+
+    const normalizedFiles = normalizeWorkspaceFileSelection(
+      nextFsMap,
+      state.activeFilePath,
+      state.openFilePaths.includes(subPath)
+        ? state.openFilePaths
+        : [...state.openFilePaths, subPath]
+    )
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap: nextFsMap,
+        activeFilePath: normalizedFiles.activeFilePath,
+        openFilePaths: normalizedFiles.openFilePaths
+      }
+    }
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
 
     set({
       fsMap: nextFsMap,
+      workspaces: nextWorkspaces,
+      openFilePaths: normalizedFiles.openFilePaths,
       placedComponents: nextComponents,
       wires: nextWires,
       selectedComponentIds: [],
@@ -2100,37 +2797,47 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   generateFlatCircuitTSX: () => {
     const state = get()
     const syncedFiles: FSMap = { ...state.fsMap }
+    const rootPath = isSchematicFilePath(state.activeFilePath) ? state.activeFilePath : SCHEMATIC_MAIN_PATH
 
-    // Always sync the currently edited file from live canvas state first.
-    syncedFiles[state.activeFilePath] = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
+    if (isCanvasEditableFilePath(state.activeFilePath)) {
+      syncedFiles[state.activeFilePath] = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
+    }
 
     Object.keys(syncedFiles)
-      .filter(path => path === 'main.tsx' || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
+      .filter(path => isSchematicFilePath(path) || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
       .forEach((path) => {
         const parsed = parseFileToCanvas(path, syncedFiles)
         syncedFiles[path] = generateFileTSX(path, parsed.components, parsed.wires)
       })
 
     const files = regenerateSubcircuitIndex(syncedFiles)
-    return generateFlatMainTSX(files)
+    return generateFlatMainTSX(files, rootPath)
   },
 
   generateProjectStructure: () => {
     const state = get()
     const syncedFiles: FSMap = { ...state.fsMap }
 
-    // Always sync the currently edited file from live canvas state first.
-    syncedFiles[state.activeFilePath] = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
+    if (isCanvasEditableFilePath(state.activeFilePath)) {
+      syncedFiles[state.activeFilePath] = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
+    }
 
     Object.keys(syncedFiles)
-      .filter(path => path === 'main.tsx' || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
+      .filter(path => isSchematicFilePath(path) || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
       .forEach((path) => {
         const parsed = parseFileToCanvas(path, syncedFiles)
         syncedFiles[path] = generateFileTSX(path, parsed.components, parsed.wires)
       })
 
     const files = regenerateSubcircuitIndex(syncedFiles)
-    const { ['main.tsx']: parent = '', ...children } = files
+    const parentPath = (isSchematicFilePath(state.activeFilePath) && files[state.activeFilePath])
+      ? state.activeFilePath
+      : (files[SCHEMATIC_MAIN_PATH] ? SCHEMATIC_MAIN_PATH : LEGACY_MAIN_PATH)
+
+    const parent = files[parentPath] || ''
+    const children = Object.fromEntries(
+      Object.entries(files).filter(([path]) => path !== parentPath)
+    )
 
     return {
       parent,
@@ -2149,22 +2856,127 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   importTSXIntoActiveFile: (content) => {
     const state = get()
-    const normalized = normalizeImportedTSXContent(content, state.activeFilePath)
+    const standaloneImport = detectStandaloneImport(content)
+
+    const preserveRequestedPath =
+      !standaloneImport ||
+      (standaloneImport.kind === 'schematic' && isSchematicFilePath(state.activeFilePath)) ||
+      (standaloneImport.kind === 'subcircuit' && state.activeFilePath.startsWith('subcircuits/')) ||
+      (standaloneImport.kind === 'symbol' && state.activeFilePath.startsWith('symbols/'))
+
+    const targetFilePath = getCanonicalFilePathForContent(
+      state.activeFilePath,
+      content,
+      state.fsMap,
+      { preserveRequestedPath }
+    )
+
+    const normalized = isCanvasEditableFilePath(targetFilePath)
+      ? normalizeImportedTSXContent(content, targetFilePath)
+      : content
+
+    const nextFsMapSeed = { ...state.fsMap }
+    const isSameNamedRelocation =
+      targetFilePath !== state.activeFilePath &&
+      getFileBaseName(targetFilePath) === getFileBaseName(state.activeFilePath)
+
+    if (isSameNamedRelocation && nextFsMapSeed[state.activeFilePath]) {
+      delete nextFsMapSeed[state.activeFilePath]
+    }
+
     const nextFsMap = regenerateSubcircuitIndex({
-      ...state.fsMap,
-      [state.activeFilePath]: normalized
+      ...nextFsMapSeed,
+      [targetFilePath]: normalized
     })
 
-    saveFSMapToStorage(nextFsMap)
+    const nextOpenFilePaths = state.openFilePaths.includes(targetFilePath)
+      ? state.openFilePaths.map(path => (isSameNamedRelocation && path === state.activeFilePath ? targetFilePath : path))
+      : [
+          ...state.openFilePaths.filter(path => !(isSameNamedRelocation && path === state.activeFilePath)),
+          targetFilePath
+        ]
 
-    const parsed = parseFileToCanvas(state.activeFilePath, nextFsMap)
+    const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, targetFilePath, nextOpenFilePaths)
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap: nextFsMap,
+        activeFilePath: normalizedFiles.activeFilePath,
+        openFilePaths: normalizedFiles.openFilePaths
+      }
+    }
+
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, nextFsMap)
     set({
       fsMap: nextFsMap,
+      activeFilePath: normalizedFiles.activeFilePath,
+      openFilePaths: normalizedFiles.openFilePaths,
+      workspaces: nextWorkspaces,
       placedComponents: parsed.components,
       wires: parsed.wires,
       selectedComponentIds: [],
       wiringStart: null,
       cursorNearPin: null,
+      exportPreview: null,
+      codeViewTab: 'source'
+    })
+  },
+
+  importFilesBatch: (files) => {
+    const state = get()
+    if (!Array.isArray(files) || files.length === 0) return
+
+    let nextFsMapSeed = { ...state.fsMap }
+    const nextOpenFilePaths = [...state.openFilePaths]
+    const importedSchematicPaths: string[] = []
+
+    files.forEach(({ fileName, content }) => {
+      const requestedPath = fileName.includes('/') ? fileName : fileName.replace(/^\.\/+/, '')
+      const targetFilePath = getCanonicalFilePathForContent(requestedPath, content, nextFsMapSeed)
+      const normalized = isCanvasEditableFilePath(targetFilePath)
+        ? normalizeImportedTSXContent(content, targetFilePath)
+        : content
+
+      nextFsMapSeed[targetFilePath] = normalized
+      if (!nextOpenFilePaths.includes(targetFilePath)) {
+        nextOpenFilePaths.push(targetFilePath)
+      }
+      if (detectFileKind(normalized) === 'schematic') {
+        importedSchematicPaths.push(targetFilePath)
+      }
+    })
+
+    const nextFsMap = regenerateSubcircuitIndex(ensureFsMapDefaults(nextFsMapSeed))
+    const importedProject = buildImportedProjectState(nextFsMap)
+    const preferredActivePath =
+      [...importedSchematicPaths].reverse().find(path => importedProject.entryFiles.includes(path))
+      || importedProject.entryFiles.find(path => path !== SCHEMATIC_MAIN_PATH)
+      || importedProject.entryFiles[0]
+      || state.activeFilePath
+    const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, preferredActivePath, nextOpenFilePaths)
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, nextFsMap)
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap: nextFsMap,
+        activeFilePath: normalizedFiles.activeFilePath,
+        openFilePaths: normalizedFiles.openFilePaths
+      }
+    }
+
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+    set({
+      fsMap: nextFsMap,
+      workspaces: nextWorkspaces,
+      activeFilePath: normalizedFiles.activeFilePath,
+      openFilePaths: normalizedFiles.openFilePaths,
+      placedComponents: parsed.components,
+      wires: parsed.wires,
+      selectedComponentIds: [],
       exportPreview: null,
       codeViewTab: 'source'
     })
@@ -2218,11 +3030,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const netports = state.placedComponents.filter(c => c.catalogId === 'netport')
       console.log('[netport:regenerate]', state.activeFilePath, netports.map(c => ({ name: c.name, schX: c.props.schX, schY: c.props.schY })))
     }
-    const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
-    const nextFsMap = regenerateSubcircuitIndex({
-      ...state.fsMap,
-      [state.activeFilePath]: currentContent
-    })
+    const nextFsMap = syncActiveCanvasFile(state)
 
     // Sync to active workspace and persist
     const nextWorkspaces = {
@@ -2293,7 +3101,16 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   openFileTab: (filePath) => {
     const state = get()
     if (state.openFilePaths.includes(filePath)) return
-    set({ openFilePaths: [...state.openFilePaths, filePath] })
+    const openFilePaths = [...state.openFilePaths, filePath]
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        openFilePaths
+      }
+    }
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+    set({ openFilePaths, workspaces: nextWorkspaces })
   },
   
   closeFileTab: (filePath) => {
@@ -2306,32 +3123,145 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (newActive !== state.activeFilePath) {
       get().setActiveFilePath(newActive)
     }
-    set({ openFilePaths: next })
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        activeFilePath: newActive,
+        openFilePaths: next
+      }
+    }
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+    set({ openFilePaths: next, workspaces: nextWorkspaces })
+  },
+
+  deleteFile: (filePath) => {
+    const state = get()
+    if (!state.fsMap[filePath]) return
+
+    const dependencyGraph = buildDependencyGraph(state.fsMap)
+    const usedBy = dependencyGraph[filePath]?.usedBy || []
+    if (usedBy.length > 0) {
+      const message = `Cannot delete ${filePath} because it is still used by: ${usedBy.join(', ')}`
+      if (typeof window !== 'undefined') {
+        window.alert(message)
+      } else {
+        console.warn(message)
+      }
+      return
+    }
+
+    const nextFsMap = { ...state.fsMap }
+    delete nextFsMap[filePath]
+
+    const ensuredFsMap = regenerateSubcircuitIndex(ensureFsMapDefaults(nextFsMap))
+    const normalizedFiles = normalizeWorkspaceFileSelection(
+      ensuredFsMap,
+      state.activeFilePath === filePath ? undefined : state.activeFilePath,
+      state.openFilePaths.filter(path => path !== filePath)
+    )
+
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, ensuredFsMap)
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap: ensuredFsMap,
+        activeFilePath: normalizedFiles.activeFilePath,
+        openFilePaths: normalizedFiles.openFilePaths
+      }
+    }
+
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+    set({
+      fsMap: ensuredFsMap,
+      workspaces: nextWorkspaces,
+      activeFilePath: normalizedFiles.activeFilePath,
+      openFilePaths: normalizedFiles.openFilePaths,
+      placedComponents: parsed.components,
+      wires: parsed.wires,
+      selectedComponentIds: [],
+      exportPreview: null
+    })
+  },
+
+  moveFile: (oldPath, newPath) => {
+    const state = get()
+    const content = state.fsMap[oldPath]
+    if (!content || oldPath === newPath) return
+
+    try {
+      const dependencyGraph = buildDependencyGraph(state.fsMap)
+      const usedBy = dependencyGraph[oldPath]?.usedBy || []
+      if (usedBy.length > 0) {
+        throw new Error(`Cannot move ${oldPath} because it is still imported by: ${usedBy.join(', ')}`)
+      }
+      const targetPath = getCanonicalFilePathForContent(newPath, content, state.fsMap, {
+        preserveRequestedPath: true
+      })
+      validateFilePlacement(targetPath, content)
+
+      const nextFsMapBase = { ...state.fsMap }
+      delete nextFsMapBase[oldPath]
+      nextFsMapBase[targetPath] = content
+
+      const nextFsMap = regenerateSubcircuitIndex(ensureFsMapDefaults(nextFsMapBase))
+      const normalizedFiles = normalizeWorkspaceFileSelection(
+        nextFsMap,
+        state.activeFilePath === oldPath ? targetPath : state.activeFilePath,
+        state.openFilePaths.map(path => path === oldPath ? targetPath : path)
+      )
+
+      const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, nextFsMap)
+      const nextWorkspaces = {
+        ...state.workspaces,
+        [state.activeWorkspaceId]: {
+          ...state.workspaces[state.activeWorkspaceId],
+          fsMap: nextFsMap,
+          activeFilePath: normalizedFiles.activeFilePath,
+          openFilePaths: normalizedFiles.openFilePaths
+        }
+      }
+
+      saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+      set({
+        fsMap: nextFsMap,
+        workspaces: nextWorkspaces,
+        activeFilePath: normalizedFiles.activeFilePath,
+        openFilePaths: normalizedFiles.openFilePaths,
+        placedComponents: parsed.components,
+        wires: parsed.wires,
+        selectedComponentIds: []
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to move file.'
+      window.alert(message)
+    }
   },
   
   // ── Workspaces ────────────────────────────────────────────────────────────
-  createWorkspace: (name) => {
+  createWorkspace: (name = 'New Workspace') => {
     const state = get()
     // Save current workspace state first
     get().regenerateTSX()
-    const id = `ws-${Date.now()}`
+    const id = makeWorkspaceId(name)
     const newWs: WorkspaceData = {
       id,
       name,
-      fsMap: ensureFsMapDefaults({ 'main.tsx': DEFAULT_MAIN_TSX }),
-      openFilePaths: ['main.tsx'],
-      activeFilePath: 'main.tsx'
+      fsMap: ensureFsMapDefaults(createDefaultWorkspaceFsMap(name)),
+      openFilePaths: [SCHEMATIC_MAIN_PATH],
+      activeFilePath: SCHEMATIC_MAIN_PATH
     }
     const nextWorkspaces = { ...state.workspaces, [id]: newWs }
     // Switch to the new workspace
-    const parsed = parseFileToCanvas('main.tsx', newWs.fsMap)
+    const parsed = getCanvasStateForFile(SCHEMATIC_MAIN_PATH, newWs.fsMap)
     saveWorkspacesToStorage(nextWorkspaces, id)
     set({
       workspaces: nextWorkspaces,
       activeWorkspaceId: id,
       fsMap: newWs.fsMap,
-      activeFilePath: 'main.tsx',
-      openFilePaths: ['main.tsx'],
+      activeFilePath: SCHEMATIC_MAIN_PATH,
+      openFilePaths: [SCHEMATIC_MAIN_PATH],
       placedComponents: parsed.components,
       wires: parsed.wires,
       selectedComponentIds: [],
@@ -2348,8 +3278,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (!target) return
   
     // Persist current workspace state before switching
-    const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
-    const currentFsMap = regenerateSubcircuitIndex({ ...state.fsMap, [state.activeFilePath]: currentContent })
+    const currentFsMap = syncActiveCanvasFile(state)
     const updatedWorkspaces = {
       ...state.workspaces,
       [state.activeWorkspaceId]: {
@@ -2360,16 +3289,27 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       },
     }
   
-    const targetFilePath = target.activeFilePath || 'main.tsx'
-    const parsed = parseFileToCanvas(targetFilePath, target.fsMap)
-    const nextWorkspaces = { ...updatedWorkspaces, [id]: target }
+    const normalizedCurrent = normalizeWorkspaceData({
+      ...updatedWorkspaces[state.activeWorkspaceId],
+      fsMap: currentFsMap,
+      activeFilePath: state.activeFilePath,
+      openFilePaths: state.openFilePaths
+    })
+    const normalizedTarget = normalizeWorkspaceData(target)
+
+    const parsed = getCanvasStateForFile(normalizedTarget.activeFilePath, normalizedTarget.fsMap)
+    const nextWorkspaces = {
+      ...updatedWorkspaces,
+      [state.activeWorkspaceId]: normalizedCurrent,
+      [id]: normalizedTarget
+    }
     saveWorkspacesToStorage(nextWorkspaces, id)
     set({
       workspaces: nextWorkspaces,
       activeWorkspaceId: id,
-      fsMap: target.fsMap,
-      activeFilePath: targetFilePath,
-      openFilePaths: target.openFilePaths || ['main.tsx'],
+      fsMap: normalizedTarget.fsMap,
+      activeFilePath: normalizedTarget.activeFilePath,
+      openFilePaths: normalizedTarget.openFilePaths,
       placedComponents: parsed.components,
       wires: parsed.wires,
       selectedComponentIds: [],
@@ -2409,21 +3349,34 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   
   importWorkspaceJSON: (json) => {
     try {
-      const parsed = JSON.parse(json) as Partial<WorkspaceData>
-      const id = `ws-import-${Date.now()}`
-      const name = parsed.name || `Imported ${new Date().toLocaleDateString()}`
-      const fsMap = ensureFsMapDefaults(parsed.fsMap || {})
-      const newWs: WorkspaceData = {
+      const imported = importWorkspaceJson(json)
+      const id = makeWorkspaceId(imported.name)
+      const name = imported.name || `Imported ${new Date().toLocaleDateString()}`
+      const fsMap = ensureFsMapDefaults(imported.files || {})
+      const newWs: WorkspaceData = normalizeWorkspaceData({
         id,
         name,
         fsMap,
-        openFilePaths: parsed.openFilePaths || ['main.tsx'],
-        activeFilePath: parsed.activeFilePath || 'main.tsx'
-      }
+        openFilePaths: [SCHEMATIC_MAIN_PATH],
+        activeFilePath: SCHEMATIC_MAIN_PATH
+      })
       const state = get()
       const nextWorkspaces = { ...state.workspaces, [id]: newWs }
-      saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
-      set({ workspaces: nextWorkspaces })
+      const parsed = getCanvasStateForFile(newWs.activeFilePath, newWs.fsMap)
+      saveWorkspacesToStorage(nextWorkspaces, id)
+      set({
+        workspaces: nextWorkspaces,
+        activeWorkspaceId: id,
+        fsMap: newWs.fsMap,
+        activeFilePath: newWs.activeFilePath,
+        openFilePaths: newWs.openFilePaths,
+        placedComponents: parsed.components,
+        wires: parsed.wires,
+        selectedComponentIds: [],
+        breadcrumbStack: [],
+        undoStack: [],
+        redoStack: []
+      })
     } catch (e) {
       console.error('Failed to import workspace JSON:', e)
     }
@@ -2432,28 +3385,89 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   exportWorkspaceJSON: () => {
     const state = get()
     // First sync fsMap
-    const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
-    const currentFsMap = regenerateSubcircuitIndex({ ...state.fsMap, [state.activeFilePath]: currentContent })
-    const wsData: WorkspaceData = {
-      ...state.workspaces[state.activeWorkspaceId],
-      fsMap: currentFsMap,
-      activeFilePath: state.activeFilePath,
-      openFilePaths: state.openFilePaths
+    const currentFsMap = syncActiveCanvasFile(state)
+    const normalizedFiles = normalizeWorkspaceFileSelection(currentFsMap, state.activeFilePath, state.openFilePaths)
+    const nextWorkspaces = {
+      ...state.workspaces,
+      [state.activeWorkspaceId]: {
+        ...state.workspaces[state.activeWorkspaceId],
+        fsMap: currentFsMap,
+        activeFilePath: normalizedFiles.activeFilePath,
+        openFilePaths: normalizedFiles.openFilePaths
+      }
     }
-    return JSON.stringify(wsData, null, 2)
+    saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
+    set({
+      fsMap: currentFsMap,
+      workspaces: nextWorkspaces,
+      activeFilePath: normalizedFiles.activeFilePath,
+      openFilePaths: normalizedFiles.openFilePaths
+    })
+    const wsName = state.workspaces[state.activeWorkspaceId]?.name || 'Workspace'
+    return JSON.stringify(exportWorkspaceJson(wsName, currentFsMap), null, 2)
+  },
+
+  importWorkspace: (payload, nameOverride) => {
+    try {
+      const imported = importWorkspaceJson(payload)
+      const finalName = nameOverride || imported.name
+      const id = makeWorkspaceId(finalName)
+      const state = get()
+      const newWs: WorkspaceData = normalizeWorkspaceData({
+        id,
+        name: finalName,
+        fsMap: ensureFsMapDefaults(imported.files),
+        activeFilePath: SCHEMATIC_MAIN_PATH,
+        openFilePaths: [SCHEMATIC_MAIN_PATH]
+      })
+      const nextWorkspaces = { ...state.workspaces, [id]: newWs }
+      const parsed = parseFileToCanvas(newWs.activeFilePath, newWs.fsMap)
+      saveWorkspacesToStorage(nextWorkspaces, id)
+      set({
+        workspaces: nextWorkspaces,
+        activeWorkspaceId: id,
+        fsMap: newWs.fsMap,
+        activeFilePath: newWs.activeFilePath,
+        openFilePaths: newWs.openFilePaths,
+        placedComponents: parsed.components,
+        wires: parsed.wires,
+        selectedComponentIds: [],
+        breadcrumbStack: [],
+        undoStack: [],
+        redoStack: []
+      })
+    } catch (e) {
+      console.error('Failed to import workspace payload:', e)
+    }
+  },
+
+  exportActiveWorkspace: () => {
+    return get().exportWorkspaceJSON()
   }
 }))
 
 export const minimalImportExportTestUtils = {
-  parseImportedTSXToCanvas: (content: string, filePath = 'main.tsx') => {
+  parseImportedTSXToCanvas: (content: string, filePath = SCHEMATIC_MAIN_PATH) => {
     const normalized = normalizeImportedTSXContent(content, filePath)
     const fsMap = ensureFsMapDefaults({ [filePath]: normalized })
-    return parseFileToCanvas(filePath, fsMap)
+    const resolvedPath = getCanonicalFilePathForContent(filePath, normalized, fsMap, {
+      preserveRequestedPath: true
+    })
+    return parseFileToCanvas(resolvedPath, fsMap)
   },
   exportCanvasToTSX: (
     filePath: string,
     components: PlacedComponent[],
     wires: WireConnection[]
   ) => generateFileTSX(filePath, components, wires),
-  normalizeImportedTSXContent
+  normalizeImportedTSXContent,
+  detectFileKind
+}
+
+export const getActiveWorkspace = (state: EditorState) => {
+  return state.workspaces[state.activeWorkspaceId] || null
+}
+
+export const getActiveFsMap = (state: EditorState): FSMap => {
+  return getActiveWorkspace(state)?.fsMap ?? {}
 }

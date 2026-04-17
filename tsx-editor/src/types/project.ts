@@ -8,6 +8,31 @@ export interface ProjectFile {
   type: 'schematic' | 'symbol' | 'subcircuit' | 'meta'
 }
 
+export interface ImportedProjectFile {
+  path: string
+  code: string
+  kind: 'schematic' | 'symbol' | 'subcircuit' | 'unknown'
+  exports: string[]
+  imports: string[]
+}
+
+export interface DependencyGraphNode {
+  path: string
+  imports: string[]
+  usedBy: string[]
+}
+
+export type DependencyGraph = Record<string, DependencyGraphNode>
+export type ComponentUsageMap = Record<string, string[]>
+
+export interface ImportedProjectState {
+  files: Record<string, ImportedProjectFile>
+  registry: Record<string, string>
+  entryFiles: string[]
+  dependencyGraph: DependencyGraph
+  componentUsage: ComponentUsageMap
+}
+
 export interface ProjectStructure {
   name: string
   version: string
@@ -36,6 +61,43 @@ export interface SubcircuitDefinition {
   filePath: string
   ports: string[] // ["VIN", "VOUT", "GND"]
   internalComponents: string[]
+}
+
+export type SubcircuitRegistry = {
+  [name: string]: {
+    filePath: string
+    ports: string[]
+  }
+}
+
+export type PatchComponentSpec =
+  | string
+  | {
+      type?: string
+      subcircuit?: string
+      instanceName?: string
+      props?: Record<string, any>
+      schX?: number
+      schY?: number
+    }
+
+export type PatchWireSpec =
+  | string
+  | {
+      from: string
+      to: string
+    }
+
+export interface PatchDefinition {
+  id: string
+  name: string
+  description?: string
+  components: PatchComponentSpec[]
+  wiring: PatchWireSpec[]
+  layout?: {
+    offsetX?: number
+    offsetY?: number
+  }
 }
 
 export interface FileTreeNode {

@@ -8,6 +8,12 @@ export interface WorkspaceData {
   activeFilePath: string
 }
 
+export interface WorkspaceExport {
+  version: 1
+  name: string
+  files: FSMap
+}
+
 export interface StoredWorkspaceState {
   workspaces: Record<string, WorkspaceData>
   activeWorkspaceId: string

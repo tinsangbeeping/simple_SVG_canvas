@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react'
 import { getAllCatalogItems } from '../catalog'
 import { CatalogItem } from '../types/catalog'
 import { useEditorStore } from '../store/editorStore'
+import { extractAllSubcircuits } from '../utils/projectManager'
 
 interface CatalogPanelProps {
   onDragStart: (item: CatalogItem) => void
@@ -19,12 +20,12 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
     [partItems]
   )
 
-  const subcircuits = Object.keys(fsMap)
-    .filter(path => path.startsWith('subcircuits/') && path.endsWith('.tsx'))
-    .map(path => {
-      const name = path.replace('subcircuits/', '').replace('.tsx', '')
-      return { name, path, isUserCreated: true }
-    })
+  const subcircuits = extractAllSubcircuits(fsMap).map(subcircuit => ({
+    name: subcircuit.name,
+    path: subcircuit.filePath,
+    ports: subcircuit.ports,
+    isUserCreated: true
+  }))
 
   const filteredParts = searchQuery
     ? partItems.filter(item =>
@@ -45,8 +46,9 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
     onDragStart(item)
   }
 
-  const handleSubcircuitDragStart = (e: React.DragEvent, subcircuitName: string) => {
+  const handleSubcircuitDragStart = (e: React.DragEvent, subcircuitName: string, subcircuitPath: string) => {
     e.dataTransfer.setData('subcircuitName', subcircuitName)
+    e.dataTransfer.setData('subcircuitPath', subcircuitPath)
     const subcircuitItem: CatalogItem = {
       metadata: {
         id: subcircuitName,
@@ -151,7 +153,7 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
               key={path}
               className="catalog-item"
               draggable
-              onDragStart={(e) => handleSubcircuitDragStart(e, name)}
+              onDragStart={(e) => handleSubcircuitDragStart(e, name, path)}
               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
             >
               <div style={{ flex: 1 }}>

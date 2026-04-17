@@ -4,6 +4,7 @@ import { PlacedComponent } from '../types/catalog'
 import { getCatalogItem } from '../catalog'
 import { SchematicSymbol } from './SchematicSymbol'
 import { getPinConfig } from '../types/schematic'
+import { extractAllSubcircuits } from '../utils/projectManager'
 
 export const Canvas: React.FC = () => {
   const SNAP_STEP = 2
@@ -36,7 +37,9 @@ export const Canvas: React.FC = () => {
     disconnectPin,
     toggleSubcircuitPinSelection,
     setCursorNearPin,
-    openSubcircuitEditor
+    openSubcircuitEditor,
+    insertSubcircuitInstance,
+    setActiveFilePath
   } = useEditorStore()
 
   const normalizeRotation = (rotation: any): number => {
@@ -70,6 +73,9 @@ export const Canvas: React.FC = () => {
       const portCount = ((component.props.ports as string[] | undefined) || []).length
       const rows = Math.max(1, Math.ceil(portCount / 2))
       return { width: 130, height: Math.max(46, 28 + rows * 18) }
+    }
+    if (component.catalogId === 'symbol-instance') {
+      return { width: 120, height: 56 }
     }
     if (component.catalogId === 'customchip') {
       const legacyCount = Math.max(2, Number(component.props.pinCount || 8))
@@ -110,6 +116,10 @@ export const Canvas: React.FC = () => {
           y: 18 + row * 18
         }
       })
+    }
+
+    if (component.catalogId === 'symbol-instance') {
+      return []
     }
 
     if (component.catalogId === 'customchip') {
@@ -292,6 +302,8 @@ export const Canvas: React.FC = () => {
     e.preventDefault()
     const catalogItemId = e.dataTransfer.getData('catalogItemId')
     const subcircuitName = e.dataTransfer.getData('subcircuitName')
+    const subcircuitPath = e.dataTransfer.getData('subcircuitPath')
+    const symbolName = e.dataTransfer.getData('symbolName')
     
     if (!canvasRef.current) return
 
@@ -301,29 +313,33 @@ export const Canvas: React.FC = () => {
     const y = Math.round((e.clientY - rect.top - viewport.y) / SNAP_STEP) * SNAP_STEP
 
     if (subcircuitName) {
+      insertSubcircuitInstance(subcircuitName, {
+        schX: x,
+        schY: y,
+        filePath: subcircuitPath || undefined
+      })
+      return
+    }
+
+    if (symbolName) {
       const existingNames = placedComponents.map(c => c.name)
-      const base = subcircuitName
       let i = 1
-      let uniqueName = `${base}${i}`
+      let uniqueName = `${symbolName}${i}`
       while (existingNames.includes(uniqueName)) {
         i += 1
-        uniqueName = `${base}${i}`
+        uniqueName = `${symbolName}${i}`
       }
 
-      const subcircuitFile = useEditorStore.getState().fsMap[`subcircuits/${subcircuitName}.tsx`] || ''
-      const ports = [...new Set(Array.from(subcircuitFile.matchAll(/net\.([A-Za-z_][A-Za-z0-9_]*)/g)).map(m => m[1]))]
-
       addPlacedComponent({
-        id: `sub-${Date.now()}-${Math.random()}`,
-        catalogId: 'subcircuit-instance',
+        id: `sym-${Date.now()}-${Math.random()}`,
+        catalogId: 'symbol-instance',
         name: uniqueName,
         props: {
-          subcircuitName,
-          ports,
+          symbolName,
           schX: x,
           schY: y
         },
-        tsxSnippet: `<${subcircuitName} name="${uniqueName}" schX={${x}} schY={${y}} />`
+        tsxSnippet: `<${symbolName} name="${uniqueName}" schX={${x}} schY={${y}} />`
       })
       return
     }
@@ -702,10 +718,11 @@ export const Canvas: React.FC = () => {
             const rotation = normalizeRotation(component.props.schRotation)
             const isSelected = selectedComponentIds.includes(component.id)
             const isSubcircuit = component.catalogId === 'subcircuit-instance'
+            const isSymbolInstance = component.catalogId === 'symbol-instance'
             const isNetPort = component.catalogId === 'netport'
             const isNet = component.catalogId === 'net'
 
-            if (!isSubcircuit && !isNetPort && !getCatalogItem(component.catalogId)) {
+            if (!isSubcircuit && !isSymbolInstance && !isNetPort && !getCatalogItem(component.catalogId)) {
               return null
             }
             
@@ -722,6 +739,8 @@ export const Canvas: React.FC = () => {
                     ? 'rgba(156, 39, 176, 0.15)'
                     : isSubcircuit
                     ? 'rgba(255, 152, 0, 0.12)'
+                    : isSymbolInstance
+                    ? 'rgba(0, 188, 212, 0.12)'
                     : 'transparent',
                   border: isSelected
                     ? '2px solid #007acc'
@@ -731,6 +750,8 @@ export const Canvas: React.FC = () => {
                     ? 'none'
                     : isSubcircuit
                     ? '2px dashed rgba(255, 152, 0, 0.55)'
+                    : isSymbolInstance
+                    ? '2px dashed rgba(0, 188, 212, 0.6)'
                     : '1px solid #3e3e3e',
                   cursor: cursorNearPin?.componentId === component.id ? 'crosshair' : 'move',
                   boxShadow: isSelected ? '0 0 0 2px rgba(0, 122, 204, 0.3)' : 'none',
@@ -740,6 +761,9 @@ export const Canvas: React.FC = () => {
                 onDoubleClick={() => {
                   if (isSubcircuit && component.props.subcircuitName) {
                     openSubcircuitEditor(component.props.subcircuitName)
+                  }
+                  if (isSymbolInstance && component.props.symbolName) {
+                    setActiveFilePath(`symbols/${component.props.symbolName}.tsx`)
                   }
                 }}
               >
@@ -755,6 +779,8 @@ export const Canvas: React.FC = () => {
                     ? '#ce93d8'
                     : isSubcircuit
                     ? '#ff9800'
+                    : isSymbolInstance
+                    ? '#26c6da'
                     : '#e0e0e0',
                   fontWeight: 500,
                   pointerEvents: 'none'
@@ -785,6 +811,23 @@ export const Canvas: React.FC = () => {
                   </div>
                 )}
 
+                {isSymbolInstance && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    fontSize: 12,
+                    color: '#26c6da',
+                    fontWeight: 600,
+                    pointerEvents: 'none',
+                    textAlign: 'center',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    {component.props.symbolName}
+                  </div>
+                )}
+
                 {isNetPort && (
                   <div style={{
                     position: 'absolute',
@@ -800,7 +843,7 @@ export const Canvas: React.FC = () => {
                   </div>
                 )}
 
-                {!isSubcircuit && !isNetPort && (
+                {!isSubcircuit && !isSymbolInstance && !isNetPort && (
                   <div
                     style={{
                       width: baseSize.width,

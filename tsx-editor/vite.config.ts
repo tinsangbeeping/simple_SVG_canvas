@@ -9,6 +9,7 @@ export default defineConfig({
     middlewareMode: false
   },
   optimizeDeps: {
+    include: ['react', 'react/jsx-dev-runtime', 'react-dom', 'react-dom/client'],
     esbuildOptions: {
       supported: {
         bigint: true

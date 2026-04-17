@@ -4,13 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --force",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tsci": "tsci",
     "tsci:doctor": "tsci doctor",
     "verify:minimal-roundtrip": "vite-node scripts/verify-minimal-roundtrip.ts",
-    "validate": "vite-node ../scripts/validate.ts"
+    "validate": "vite-node ../scripts/validate.ts",
+    "validate:workspace": "vite-node scripts/validate-workspace.ts"
   },
   "dependencies": {
     "@babel/generator": "^7.23.0",

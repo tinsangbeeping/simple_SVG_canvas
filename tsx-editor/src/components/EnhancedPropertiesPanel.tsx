@@ -1,5 +1,8 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { PlacedComponent, WireConnection } from '../types/catalog'
+import { ExposedPortSelection } from '../types/catalog'
+import { useEditorStore } from '../store/editorStore'
+import { ActiveFileType } from '../utils/fileClassification'
 import '../styles/PropertiesPanel.css'
 
 interface EnhancedPropertiesPanelProps {
@@ -7,6 +10,7 @@ interface EnhancedPropertiesPanelProps {
   connections: WireConnection[]
   activeFileContent: string
   activeFilePath: string
+  activeFileType: ActiveFileType
   placedComponents: PlacedComponent[]
   onPropertyChange?: (componentId: string, propName: string, value: any) => void
 }
@@ -64,10 +68,28 @@ export const EnhancedPropertiesPanel: React.FC<EnhancedPropertiesPanelProps> = (
   connections,
   activeFileContent,
   activeFilePath,
+  activeFileType,
   placedComponents,
   onPropertyChange
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>('properties')
+  const [creationStep, setCreationStep] = useState<'select' | 'name'>('select')
+  const [subcircuitName, setSubcircuitName] = useState('')
+  const [selectedPortNames, setSelectedPortNames] = useState<Record<string, string>>({})
+  const isJsonFile = activeFileType === 'json'
+  const canShowSourceTab = activeFileType !== 'json'
+
+  const selectedComponentIds = useEditorStore(s => s.selectedComponentIds)
+  const subcircuitCreation = useEditorStore(s => s.subcircuitCreation)
+  const beginSubcircuitPinSelection = useEditorStore(s => s.beginSubcircuitPinSelection)
+  const cancelSubcircuitPinSelection = useEditorStore(s => s.cancelSubcircuitPinSelection)
+  const createSubcircuit = useEditorStore(s => s.createSubcircuit)
+
+  useEffect(() => {
+    if (!canShowSourceTab && activeTab === 'tsx-code') {
+      setActiveTab('json')
+    }
+  }, [activeTab, canShowSourceTab])
 
   const relevantConnections = connections.filter(
     c => selectedComponent && (c.from.componentId === selectedComponent.id || c.to.componentId === selectedComponent.id)
@@ -202,6 +224,165 @@ export const EnhancedPropertiesPanel: React.FC<EnhancedPropertiesPanelProps> = (
     )
   }
 
+  const renderSubcircuitCreationPanel = () => {
+    const activeSelectionIds = subcircuitCreation.active
+      ? subcircuitCreation.componentIds
+      : selectedComponentIds
+    const canStart = activeSelectionIds.length > 1
+    const selectedPinRows = subcircuitCreation.selectedPins.map(pin => {
+      const component = placedComponents.find(c => c.id === pin.componentId)
+      return {
+        key: `${pin.componentId}:${pin.pinName}`,
+        componentId: pin.componentId,
+        pinName: pin.pinName,
+        componentName: component?.name || pin.componentId
+      }
+    })
+
+    return (
+      <div style={{ marginBottom: 12, border: '1px solid #3e3e3e', borderRadius: 4, padding: 10, background: '#232323' }}>
+        <div style={{ fontSize: 12, color: '#ddd', fontWeight: 600, marginBottom: 8 }}>Subcircuit Creation</div>
+        <div style={{ fontSize: 12, color: '#aaa', marginBottom: 8 }}>
+          Selected components: {activeSelectionIds.length}
+        </div>
+
+        {!subcircuitCreation.active && (
+          <button
+            className="btn btn-primary"
+            style={{ width: '100%', marginBottom: 8 }}
+            disabled={!canStart}
+            onClick={() => {
+              beginSubcircuitPinSelection(activeSelectionIds)
+              setCreationStep('select')
+              setSelectedPortNames({})
+            }}
+            title={canStart ? 'Choose boundary pins to expose' : 'Select at least 2 components first'}
+          >
+            Create Subcircuit from Selection
+          </button>
+        )}
+
+        {subcircuitCreation.active && creationStep === 'select' && (
+          <>
+            <div style={{ fontSize: 12, color: '#aaa', marginBottom: 8 }}>
+              Step 1: click candidate pins on canvas to expose them as public ports.
+            </div>
+            <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+              Candidate: {subcircuitCreation.candidatePins.length} • Selected: {subcircuitCreation.selectedPins.length}
+            </div>
+
+            {selectedPinRows.length > 0 && (
+              <div style={{ maxHeight: 110, overflowY: 'auto', border: '1px solid #3e3e3e', borderRadius: 4, padding: 8, marginBottom: 8 }}>
+                {selectedPinRows.map(pin => (
+                  <div key={pin.key} style={{ fontSize: 12, color: '#ffb74d', marginBottom: 4 }}>
+                    • {pin.componentName}.{pin.pinName}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn btn-primary"
+                style={{ flex: 1 }}
+                disabled={subcircuitCreation.selectedPins.length === 0}
+                onClick={() => {
+                  const defaults: Record<string, string> = {}
+                  subcircuitCreation.selectedPins.forEach(pin => {
+                    defaults[`${pin.componentId}:${pin.pinName}`] = pin.pinName.toUpperCase()
+                  })
+                  setSelectedPortNames(defaults)
+                  setCreationStep('name')
+                }}
+              >
+                Next
+              </button>
+              <button
+                className="btn btn-secondary"
+                style={{ flex: 1 }}
+                onClick={() => {
+                  cancelSubcircuitPinSelection()
+                  setCreationStep('select')
+                  setSelectedPortNames({})
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        )}
+
+        {subcircuitCreation.active && creationStep === 'name' && (
+          <>
+            <div style={{ fontSize: 12, color: '#aaa', marginBottom: 8 }}>
+              Step 2: set public port names and save as subcircuits/&lt;name&gt;.tsx
+            </div>
+
+            <div style={{ maxHeight: 130, overflowY: 'auto', marginBottom: 8 }}>
+              {selectedPinRows.map(pin => {
+                const key = pin.key
+                const value = selectedPortNames[key] ?? pin.pinName.toUpperCase()
+                return (
+                  <div key={key} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 6 }}>
+                    <div style={{ fontSize: 12, color: '#bbb', alignSelf: 'center' }}>{pin.componentName}.{pin.pinName}</div>
+                    <input
+                      value={value}
+                      onChange={(e) => setSelectedPortNames(prev => ({ ...prev, [key]: e.target.value }))}
+                      className="property-input"
+                      placeholder="PORT"
+                    />
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="property-group" style={{ marginBottom: 8 }}>
+              <label>Subcircuit File Name:</label>
+              <input
+                type="text"
+                value={subcircuitName}
+                onChange={(e) => setSubcircuitName(e.target.value)}
+                placeholder="MySubcircuit"
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn btn-primary"
+                style={{ flex: 1 }}
+                disabled={!subcircuitName.trim()}
+                onClick={() => {
+                  const exposedPorts: ExposedPortSelection[] = subcircuitCreation.selectedPins.map(pin => {
+                    const key = `${pin.componentId}:${pin.pinName}`
+                    return {
+                      componentId: pin.componentId,
+                      pinName: pin.pinName,
+                      portName: (selectedPortNames[key] || pin.pinName.toUpperCase()).trim()
+                    }
+                  })
+
+                  createSubcircuit(subcircuitName.trim(), subcircuitCreation.componentIds, exposedPorts)
+                  setSubcircuitName('')
+                  setSelectedPortNames({})
+                  setCreationStep('select')
+                }}
+              >
+                Create
+              </button>
+              <button
+                className="btn btn-secondary"
+                style={{ flex: 1 }}
+                onClick={() => setCreationStep('select')}
+              >
+                Back
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="enhanced-properties-panel">
       <div className="tab-header">
@@ -217,12 +398,14 @@ export const EnhancedPropertiesPanel: React.FC<EnhancedPropertiesPanelProps> = (
         >
           🔗 Connections
         </button>
-        <button
-          className={`tab-button ${activeTab === 'tsx-code' ? 'active' : ''}`}
-          onClick={() => setActiveTab('tsx-code')}
-        >
-          📝 TSX
-        </button>
+        {canShowSourceTab && (
+          <button
+            className={`tab-button ${activeTab === 'tsx-code' ? 'active' : ''}`}
+            onClick={() => setActiveTab('tsx-code')}
+          >
+            📝 TSX
+          </button>
+        )}
         <button
           className={`tab-button ${activeTab === 'json' ? 'active' : ''}`}
           onClick={() => setActiveTab('json')}
@@ -234,6 +417,7 @@ export const EnhancedPropertiesPanel: React.FC<EnhancedPropertiesPanelProps> = (
       <div className="tab-content">
         {activeTab === 'properties' && (
           <div className="properties-tab">
+            {renderSubcircuitCreationPanel()}
             {selectedComponent ? (
               <div>
                 <div className="property-group">
@@ -316,18 +500,26 @@ export const EnhancedPropertiesPanel: React.FC<EnhancedPropertiesPanelProps> = (
           <div className="json-tab">
             <pre className="json-display">
               <code>
-                {JSON.stringify(
-                  {
-                    file: activeFilePath,
-                    components: placedComponents.length,
-                    connections: connections.length,
-                    selectedComponent: selectedComponent
-                      ? { id: selectedComponent.id, name: selectedComponent.name }
-                      : null
-                  },
-                  null,
-                  2
-                )}
+                {isJsonFile
+                  ? (() => {
+                    try {
+                      return JSON.stringify(JSON.parse(activeFileContent), null, 2)
+                    } catch {
+                      return activeFileContent
+                    }
+                  })()
+                  : JSON.stringify(
+                    {
+                      file: activeFilePath,
+                      components: placedComponents.length,
+                      connections: connections.length,
+                      selectedComponent: selectedComponent
+                        ? { id: selectedComponent.id, name: selectedComponent.name }
+                        : null
+                    },
+                    null,
+                    2
+                  )}
               </code>
             </pre>
           </div>
