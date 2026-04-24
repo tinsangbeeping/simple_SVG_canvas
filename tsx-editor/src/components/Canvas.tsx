@@ -607,21 +607,107 @@ export const Canvas: React.FC = () => {
 
     if (!fromPos || !toPos) return null
 
-    // Calculate offset for multiple wires to the same pin
-    // Find how many wires use this exact pin pair
-    const wiresConnectedHere = wires.filter(w => 
-      (w.to.componentId === wire.from.componentId && w.to.pinName === wire.from.pinName) ||
-      (w.from.componentId === wire.from.componentId && w.from.pinName === wire.from.pinName)
-    )
-    
-    // Add offset to route multiple wires differently
-    const routeOffset = wiresConnectedHere.length > 1 ? (wireIndex % 3) * 25 : 0
-    
-    // Create orthogonal routing with dynamic midpoint based on wire count
-    const horizontalSpacing = Math.abs(toPos.x - fromPos.x) / 2
-    const midX = fromPos.x + horizontalSpacing + routeOffset
-    
-    const wirePath = `M ${fromPos.x} ${fromPos.y} L ${midX} ${fromPos.y} L ${midX} ${toPos.y} L ${toPos.x} ${toPos.y}`
+    const endpointKey = (componentId: string, pinName: string) => `${componentId}::${pinName}`
+    const fromKey = endpointKey(wire.from.componentId, wire.from.pinName)
+    const toKey = endpointKey(wire.to.componentId, wire.to.pinName)
+
+    const endpointDegree = (key: string) => wires.reduce((count, candidate) => {
+      const cFrom = endpointKey(candidate.from.componentId, candidate.from.pinName)
+      const cTo = endpointKey(candidate.to.componentId, candidate.to.pinName)
+      return count + (cFrom === key || cTo === key ? 1 : 0)
+    }, 0)
+
+    const degreeFrom = endpointDegree(fromKey)
+    const degreeTo = endpointDegree(toKey)
+
+    const pickHubKey = (): string | null => {
+      const fromBranch = degreeFrom > 1
+      const toBranch = degreeTo > 1
+      if (!fromBranch && !toBranch) return null
+      if (fromBranch && !toBranch) return fromKey
+      if (!fromBranch && toBranch) return toKey
+      if (degreeFrom > degreeTo) return fromKey
+      if (degreeTo > degreeFrom) return toKey
+      return fromKey < toKey ? fromKey : toKey
+    }
+
+    const hubKey = pickHubKey()
+    const junctionDots: Array<{ x: number; y: number; key: string }> = []
+
+    const wirePath = (() => {
+      if (!hubKey) {
+        const wiresConnectedHere = wires.filter(w => 
+          (w.to.componentId === wire.from.componentId && w.to.pinName === wire.from.pinName) ||
+          (w.from.componentId === wire.from.componentId && w.from.pinName === wire.from.pinName)
+        )
+        const routeOffset = wiresConnectedHere.length > 1 ? (wireIndex % 3) * 25 : 0
+        const horizontalSpacing = Math.abs(toPos.x - fromPos.x) / 2
+        const midX = fromPos.x + horizontalSpacing + routeOffset
+        return `M ${fromPos.x} ${fromPos.y} L ${midX} ${fromPos.y} L ${midX} ${toPos.y} L ${toPos.x} ${toPos.y}`
+      }
+
+      const hubIsFrom = hubKey === fromKey
+      const hubPos = hubIsFrom ? fromPos : toPos
+      const targetPos = hubIsFrom ? toPos : fromPos
+
+      const hubConnections = wires.filter(candidate => {
+        const cFrom = endpointKey(candidate.from.componentId, candidate.from.pinName)
+        const cTo = endpointKey(candidate.to.componentId, candidate.to.pinName)
+        return cFrom === hubKey || cTo === hubKey
+      })
+
+      const targetXs = hubConnections
+        .map(candidate => {
+          const cFrom = endpointKey(candidate.from.componentId, candidate.from.pinName)
+          const other = cFrom === hubKey
+            ? { componentId: candidate.to.componentId, pinName: candidate.to.pinName }
+            : { componentId: candidate.from.componentId, pinName: candidate.from.pinName }
+          const otherComp = placedComponents.find(c => c.id === other.componentId)
+          return otherComp ? getPinPositionForComponent(otherComp, other.pinName)?.x : undefined
+        })
+        .filter((x): x is number => typeof x === 'number')
+
+      const avgTargetX = targetXs.length > 0
+        ? targetXs.reduce((sum, x) => sum + x, 0) / targetXs.length
+        : targetPos.x
+      const sortedTargets = [...targetXs].sort((a, b) => a - b)
+      let trunkX = avgTargetX
+
+      // Keep the shared trunk near connected targets so fanout looks compact,
+      // avoiding oversized mirrored "E" routes on simple bridge circuits.
+      if (sortedTargets.length > 0) {
+        const minTargetX = sortedTargets[0]
+        const maxTargetX = sortedTargets[sortedTargets.length - 1]
+        trunkX = Math.max(minTargetX, Math.min(maxTargetX, trunkX))
+      }
+
+      if (Math.abs(trunkX - hubPos.x) < 8) {
+        const fallbackDirection = avgTargetX >= hubPos.x ? 1 : -1
+        trunkX = hubPos.x + fallbackDirection * 8
+      }
+
+      const orderedHubIds = [...hubConnections.map(c => c.id)].sort()
+      const isHubPrimaryWire = orderedHubIds[0] === wire.id
+      if (isHubPrimaryWire && Math.abs(trunkX - hubPos.x) >= 1) {
+        junctionDots.push({ x: trunkX, y: hubPos.y, key: `junction-${hubKey}` })
+      }
+
+      const points = hubIsFrom
+        ? [
+            { x: fromPos.x, y: fromPos.y },
+            { x: trunkX, y: fromPos.y },
+            { x: trunkX, y: toPos.y },
+            { x: toPos.x, y: toPos.y }
+          ]
+        : [
+            { x: fromPos.x, y: fromPos.y },
+            { x: trunkX, y: fromPos.y },
+            { x: trunkX, y: toPos.y },
+            { x: toPos.x, y: toPos.y }
+          ]
+
+      return points.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
+    })()
 
     return (
       <g key={wire.id}>
@@ -652,6 +738,9 @@ export const Canvas: React.FC = () => {
         {/* Dots at connection points */}
         <circle cx={fromPos.x} cy={fromPos.y} r="3" fill="#2196F3" style={{ pointerEvents: 'none' }} />
         <circle cx={toPos.x} cy={toPos.y} r="3" fill="#2196F3" style={{ pointerEvents: 'none' }} />
+        {junctionDots.map(dot => (
+          <circle key={dot.key} cx={dot.x} cy={dot.y} r="4" fill="#2196F3" style={{ pointerEvents: 'none' }} />
+        ))}
       </g>
     )
   }

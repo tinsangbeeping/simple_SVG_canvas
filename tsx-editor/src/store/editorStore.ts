@@ -849,6 +849,29 @@ const parseSchExpr = (expr: string, isSubcircuitFile: boolean): number => {
   return Number.isFinite(num) ? toCanvasCoordinate(num) : 0
 }
 
+const getUniqueImportedComponentName = (requestedName: string, usedNames: Set<string>): string => {
+  const base = requestedName.trim()
+  if (!base) return requestedName
+
+  if (!usedNames.has(base)) {
+    usedNames.add(base)
+    return base
+  }
+
+  const match = base.match(/^(.*?)(\d+)$/)
+  const prefix = match?.[1] && match[1].length > 0 ? match[1] : base
+  let index = match ? Number(match[2]) + 1 : 2
+  let candidate = `${prefix}${index}`
+
+  while (usedNames.has(candidate)) {
+    index += 1
+    candidate = `${prefix}${index}`
+  }
+
+  usedNames.add(candidate)
+  return candidate
+}
+
 const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: PlacedComponent[]; wires: WireConnection[] } => {
   const content = fsMap[filePath] || ''
   const isSchematicFile = isSchematicFilePath(filePath)
@@ -870,9 +893,11 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   const netRegistry = new NetRegistry()
 
   const componentRegex = /<([A-Za-z_][A-Za-z0-9_]*)\s+([^>]*?)\/>/g
+  const usedComponentNames = new Set<string>()
   let componentMatch
   let parseCursor = 0
   let defaultImportIndex = 0
+  let hasAnyExplicitCoordinates = false
 
   while ((componentMatch = componentRegex.exec(body)) !== null) {
     const tagName = componentMatch[1]
@@ -889,6 +914,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
 
     const attrRegex = /([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|\{([^}]*)\})/g
     const props: Record<string, any> = {}
+    let hasExplicitPosition = false
     let name = ''
     let attr
 
@@ -904,11 +930,15 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
 
       if (key === 'schX' && exprValue) {
         props.schX = parseSchExpr(exprValue, isSubcircuitFile)
+        hasExplicitPosition = true
+        hasAnyExplicitCoordinates = true
         continue
       }
 
       if (key === 'schY' && exprValue) {
         props.schY = parseSchExpr(exprValue, isSubcircuitFile)
+        hasExplicitPosition = true
+        hasAnyExplicitCoordinates = true
         continue
       }
 
@@ -932,10 +962,14 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
 
     if (props.schX === undefined && schXCommentExpr !== null) {
       props.schX = parseSchExpr(schXCommentExpr, isSubcircuitFile)
+      hasExplicitPosition = true
+      hasAnyExplicitCoordinates = true
     }
 
     if (props.schY === undefined && schYCommentExpr !== null) {
       props.schY = parseSchExpr(schYCommentExpr, isSubcircuitFile)
+      hasExplicitPosition = true
+      hasAnyExplicitCoordinates = true
     }
 
     if (props.schX === undefined && props.schY === undefined) {
@@ -968,6 +1002,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         continue
       }
     }
+
+    name = getUniqueImportedComponentName(name, usedComponentNames)
 
     const isCustomChip = tagName === 'chip' && (
       props.pinCount !== undefined ||
@@ -1016,6 +1052,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       props: {
         ...props,
         ...(isSymbolReference ? { symbolName: tagName } : {}),
+        layoutLocked: hasExplicitPosition,
         schX: props.schX ?? 0,
         schY: props.schY ?? 0
       },
@@ -1196,6 +1233,9 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
 
   const normalizeComponentsToViewport = (items: PlacedComponent[]): PlacedComponent[] => {
     if (items.length === 0) return items
+
+    // Respect explicit TSX coordinates from import so authored geometry is preserved.
+    if (hasAnyExplicitCoordinates) return items
 
     const points = items
       .map((component) => ({
@@ -1454,7 +1494,8 @@ const toAttrList = (props: Record<string, any>): string[] => {
       'netName',
       'netId',
       'netAnchorKind',
-      'isImplicitImportedNetAnchor'
+      'isImplicitImportedNetAnchor',
+      'layoutLocked'
     ].includes(key))
     .forEach(([key, value]) => {
       if (value === undefined || value === null || value === '') return
@@ -3098,11 +3139,18 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         ]
 
     const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, targetFilePath, nextOpenFilePaths)
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, nextFsMap)
+    const syncedFsMap = isCanvasEditableFilePath(normalizedFiles.activeFilePath)
+      ? regenerateSubcircuitIndex({
+          ...nextFsMap,
+          [normalizedFiles.activeFilePath]: generateFileTSX(normalizedFiles.activeFilePath, parsed.components, parsed.wires)
+        })
+      : nextFsMap
     const nextWorkspaces = {
       ...state.workspaces,
       [state.activeWorkspaceId]: {
         ...state.workspaces[state.activeWorkspaceId],
-        fsMap: nextFsMap,
+        fsMap: syncedFsMap,
         activeFilePath: normalizedFiles.activeFilePath,
         openFilePaths: normalizedFiles.openFilePaths
       }
@@ -3110,9 +3158,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
 
-    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, nextFsMap)
     set({
-      fsMap: nextFsMap,
+      fsMap: syncedFsMap,
       activeFilePath: normalizedFiles.activeFilePath,
       openFilePaths: normalizedFiles.openFilePaths,
       workspaces: nextWorkspaces,
@@ -3167,11 +3214,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       || state.activeFilePath
     const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, preferredActivePath, nextOpenFilePaths)
     const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, nextFsMap)
+    const syncedFsMap = isCanvasEditableFilePath(normalizedFiles.activeFilePath)
+      ? regenerateSubcircuitIndex({
+          ...nextFsMap,
+          [normalizedFiles.activeFilePath]: generateFileTSX(normalizedFiles.activeFilePath, parsed.components, parsed.wires)
+        })
+      : nextFsMap
     const nextWorkspaces = {
       ...state.workspaces,
       [state.activeWorkspaceId]: {
         ...state.workspaces[state.activeWorkspaceId],
-        fsMap: nextFsMap,
+        fsMap: syncedFsMap,
         activeFilePath: normalizedFiles.activeFilePath,
         openFilePaths: normalizedFiles.openFilePaths
       }
@@ -3179,7 +3232,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
     set({
-      fsMap: nextFsMap,
+      fsMap: syncedFsMap,
       workspaces: nextWorkspaces,
       activeFilePath: normalizedFiles.activeFilePath,
       openFilePaths: normalizedFiles.openFilePaths,
@@ -3193,7 +3246,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   applyLayout: async () => {
     const state = get()
-    const layoutTargets = state.placedComponents.filter(c => c.catalogId !== 'netport')
+    const layoutTargets = state.placedComponents.filter(c => c.catalogId !== 'netport' && !c.props.layoutLocked)
     if (layoutTargets.length === 0) return
 
     try {
