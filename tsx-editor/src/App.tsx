@@ -6,6 +6,7 @@ import { StatusBar } from './components/StatusBar'
 import { FileTree } from './components/FileTree'
 import { EditorTabs } from './components/EditorTabs'
 import { EnhancedPropertiesPanel } from './components/EnhancedPropertiesPanel'
+import { CodeView } from './components/CodeView'
 import { useEditorStore } from './store/editorStore'
 import {
   buildComponentUsage,
@@ -387,11 +388,13 @@ function App() {
                     }}
                     onClick={() => setActiveFilePath(symbol.filePath)}
                     onDragStart={(e) => {
-                      e.dataTransfer.setData('symbolName', symbol.name)
+                      e.dataTransfer.setData('symbolComponentName', symbol.name)
+                      e.dataTransfer.setData('symbolComponentPath', symbol.filePath)
+                      e.dataTransfer.setData('symbolComponentPorts', JSON.stringify(symbol.ports.map(port => port.name)))
                     }}
-                    title="Drag onto canvas to place placeholder symbol"
+                    title="Drag onto canvas to place custom chip instance"
                   >
-                    📐 {symbol.name}
+                    🧩 {symbol.name}{symbol.ports.length > 0 ? ` (${symbol.ports.map(port => port.name).join(', ')})` : ''}
                   </div>
                 ))}
               </div>
@@ -425,7 +428,7 @@ function App() {
                       gap: 8
                     }}
                     onClick={() => {
-                      if (activeFileType === 'schematic-tsx') {
+                      if (activeFileType === 'board-tsx') {
                         insertSubcircuitInstance(subckt.name, { filePath: subckt.filePath })
                       } else {
                         setActiveFilePath(subckt.filePath)
@@ -435,7 +438,7 @@ function App() {
                       e.dataTransfer.setData('subcircuitName', subckt.name)
                       e.dataTransfer.setData('subcircuitPath', subckt.filePath)
                     }}
-                    title={activeFileType === 'schematic-tsx' ? 'Click to insert into the active board or drag onto canvas' : 'Open subcircuit file'}
+                    title={activeFileType === 'board-tsx' ? 'Click to insert into the active board or drag onto canvas' : 'Open subcircuit file'}
                   >
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       🔧 {subckt.name}{subckt.ports.length > 0 ? ` (${subckt.ports.join(', ')})` : ''}
@@ -514,8 +517,8 @@ function App() {
                       <button
                         style={{ background: '#007acc', border: 'none', color: '#fff', borderRadius: 3, padding: '3px 8px', cursor: 'pointer', fontSize: 11 }}
                         onClick={() => applyPatch(patch)}
-                        disabled={activeFileType !== 'schematic-tsx'}
-                        title={activeFileType === 'schematic-tsx' ? 'Apply patch to active board' : 'Open a schematic file to apply patches'}
+                        disabled={activeFileType !== 'board-tsx'}
+                        title={activeFileType === 'board-tsx' ? 'Apply patch to active board' : 'Open a schematic file to apply patches'}
                       >
                         Insert Patch
                       </button>
@@ -534,21 +537,7 @@ function App() {
           {canRenderCanvas ? (
             <Canvas />
           ) : (
-            <div
-              style={{
-                flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#9a9a9a',
-                background: '#1e1e1e',
-                borderTop: '1px solid #2d2d2d',
-                padding: 24,
-                textAlign: 'center'
-              }}
-            >
-              This file is metadata/source, not a schematic canvas file.
-            </div>
+            <CodeView />
           )}
         </div>
 

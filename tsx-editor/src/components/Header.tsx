@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
 import { useEditorStore } from '../store/editorStore'
 import { pixelToSchematic } from '../utils/coordinateScale'
-import { buildImportedProjectState, buildSubcircuitRegistry, extractBatchFilesFromZip } from '../utils/projectManager'
+import { buildImportedProjectState, buildSubcircuitRegistry, extractBatchFilesFromZip, getBrokenImports } from '../utils/projectManager'
 import { getApplicablePatches } from '../lib/patches'
 
 const MAIN_SCHEMATIC_PATH = 'schematics/main.tsx'
@@ -189,8 +189,16 @@ export const Header: React.FC = () => {
     setShowBatchImportDialog(false)
     setBatchImportContent('')
 
-    const importedProject = buildImportedProjectState(useEditorStore.getState().fsMap)
-    alert(`Imported ${files.length} files • root: ${importedProject.rootFile || 'none'} • ${importedProject.entryFiles.length} schematic page(s) • ${Object.keys(importedProject.registry).length} reusable block(s).`)
+    const currentFsMap = useEditorStore.getState().fsMap
+    const importedProject = buildImportedProjectState(currentFsMap)
+    const broken = getBrokenImports(currentFsMap)
+    const summary = `Imported ${files.length} files • root: ${importedProject.rootFile || 'none'} • ${importedProject.entryFiles.length} schematic page(s) • ${Object.keys(importedProject.registry).length} reusable block(s).`
+    if (broken.length > 0) {
+      const brokenList = broken.map(b => `  • ${b.filePath} -> ${b.importPath}`).join('\n')
+      alert(`${summary}\n\n⚠️ Warning: ${broken.length} unresolved import(s) — these files may need to be imported separately:\n${brokenList}`)
+    } else {
+      alert(summary)
+    }
   }
 
   const handleBatchImport = () => {

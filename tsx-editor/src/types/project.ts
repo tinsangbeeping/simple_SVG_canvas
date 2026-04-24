@@ -5,13 +5,13 @@
 export interface ProjectFile {
   path: string // e.g., "main.tsx", "symbols/Resistor.tsx", "subcircuits/PowerModule.tsx"
   content: string // TSX content
-  type: 'schematic' | 'symbol' | 'subcircuit' | 'meta'
+  type: 'board' | 'symbol-component' | 'subcircuit' | 'raw' | 'meta'
 }
 
 export interface ImportedProjectFile {
   path: string
   code: string
-  kind: 'schematic' | 'symbol' | 'subcircuit' | 'unknown'
+  kind: 'board' | 'symbol-component' | 'subcircuit' | 'raw'
   exports: string[]
   imports: string[]
   sheets: string[]

@@ -14,6 +14,7 @@ import {
   buildDependencyGraph,
   buildImportedProjectState,
   buildSubcircuitRegistry,
+  buildSymbolComponentRegistry,
   extractPortsFromSubcircuitContent,
   resolveProjectPath,
   validateImports
@@ -24,6 +25,7 @@ import {
   exportWorkspaceJson,
   importWorkspaceJson
 } from './workspaceFs'
+import { extractNetlistFromGraph } from '../net/extractNetlist'
 
 // Round 0 DEBUG — set to true in browser console: window.__NETPORT_DEBUG = true
 const NETPORT_DEBUG = () => typeof window !== 'undefined' && !!(window as any).__NETPORT_DEBUG
@@ -114,9 +116,10 @@ const isSchematicFilePath = (filePath: string): boolean => {
 }
 
 const doesPathMatchDetectedKind = (filePath: string, kind: ReturnType<typeof detectFileKind>): boolean => {
-  if (kind === 'schematic') return isSchematicFilePath(filePath)
+  if (kind === 'board') return isSchematicFilePath(filePath)
   if (kind === 'subcircuit') return filePath.startsWith('subcircuits/')
-  if (kind === 'symbol') return filePath.startsWith('symbols/')
+  if (kind === 'symbol-component') return filePath.startsWith('symbols/')
+  if (kind === 'raw') return filePath.startsWith('raw/')
   return true
 }
 
@@ -126,9 +129,9 @@ const isCanvasEditableFilePath = (filePath: string): boolean => {
 
 const validateFilePlacement = (filePath: string, content: string): void => {
   const kind = inferDetectedFileKind(filePath, content)
-  if (kind === 'unknown') return
+  if (kind === 'raw') return
 
-  if (kind === 'schematic' && !isSchematicFilePath(filePath)) {
+  if (kind === 'board' && !isSchematicFilePath(filePath)) {
     throw new Error('Board schematic files must live under schematics/.')
   }
 
@@ -136,7 +139,7 @@ const validateFilePlacement = (filePath: string, content: string): void => {
     throw new Error('Subcircuit files must live under subcircuits/.')
   }
 
-  if (kind === 'symbol' && !filePath.startsWith('symbols/')) {
+  if (kind === 'symbol-component' && !filePath.startsWith('symbols/')) {
     throw new Error('Symbol files must live under symbols/.')
   }
 }
@@ -150,15 +153,16 @@ const getCanonicalFilePathForContent = (
   const normalizedRequestedPath = requestedPath === LEGACY_MAIN_PATH ? SCHEMATIC_MAIN_PATH : requestedPath
   const kind = inferDetectedFileKind(normalizedRequestedPath, content)
 
-  if (kind === 'unknown') {
-    return normalizedRequestedPath
+  if (kind === 'raw') {
+    const fallbackBaseName = getFileBaseName(normalizedRequestedPath)
+    return normalizedRequestedPath.startsWith('raw/') ? normalizedRequestedPath : `raw/${fallbackBaseName}.tsx`
   }
 
   if (options?.preserveRequestedPath && doesPathMatchDetectedKind(normalizedRequestedPath, kind)) {
     return normalizedRequestedPath
   }
 
-  if (kind === 'schematic' && isMainSchematicPath(normalizedRequestedPath)) {
+  if (kind === 'board' && isMainSchematicPath(normalizedRequestedPath)) {
     return SCHEMATIC_MAIN_PATH
   }
 
@@ -188,7 +192,7 @@ const reconcileFsMapStructure = (rawMap: FSMap): FSMap => {
     if (!(filePath.endsWith('.tsx') || filePath === LEGACY_MAIN_PATH)) return
 
     const kind = inferDetectedFileKind(filePath, content)
-    if (kind === 'unknown') {
+    if (kind === 'raw') {
       if (filePath === LEGACY_MAIN_PATH && !nextMap[SCHEMATIC_MAIN_PATH]) {
         nextMap[SCHEMATIC_MAIN_PATH] = content
         delete nextMap[LEGACY_MAIN_PATH]
@@ -260,10 +264,9 @@ const buildSymbolModule = (name: string, body: string): string => {
   return `export function ${name}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <symbol>\n${content}\n    </symbol>\n  )\n}\n`
 }
 
-const detectStandaloneImport = (content: string): { kind: 'schematic' | 'subcircuit' | 'symbol'; suggestedName: string } | null => {
+const detectStandaloneImport = (content: string): { kind: 'board' | 'subcircuit' | 'symbol-component' | 'raw'; suggestedName: string } | null => {
   const trimmed = content.trim()
   const kind = inferDetectedFileKind('ImportedThing.tsx', trimmed)
-  if (kind === 'unknown') return null
 
   const exportedName = toSafeIdentifier(extractExportedIdentifier(trimmed) || 'ImportedThing')
   return { kind, suggestedName: exportedName }
@@ -286,7 +289,7 @@ const normalizeImportedTSXContent = (content: string, activeFilePath: string): s
     return buildSubcircuitModule(targetName, '')
   }
 
-  if (detectedKind === 'schematic' || isSchematicFilePath(activeFilePath)) {
+  if (detectedKind === 'board' || isSchematicFilePath(activeFilePath)) {
     if (/<board[\s>]/.test(trimmed)) {
       return trimmed
     }
@@ -309,9 +312,12 @@ const normalizeImportedTSXContent = (content: string, activeFilePath: string): s
     return buildBoardModule(trimmed)
   }
 
-  if (detectedKind === 'symbol' || activeFilePath.startsWith('symbols/')) {
-    const symbolBody = extractContainerBody(trimmed, 'symbol')
-    return buildSymbolModule(targetName, symbolBody || trimmed)
+  if (detectedKind === 'symbol-component' || activeFilePath.startsWith('symbols/')) {
+    return trimmed
+  }
+
+  if (detectedKind === 'raw' || activeFilePath.startsWith('raw/')) {
+    return trimmed
   }
 
   const subcircuitBody = extractContainerBody(trimmed, 'subcircuit')
@@ -490,11 +496,12 @@ const extractExplicitSubcircuitPorts = (content: string): string[] | null => {
 }
 
 const getSubcircuitPorts = (fsMap: FSMap, name: string): string[] => {
-  const registry = buildSubcircuitRegistry(fsMap)
-  const filePath = registry[name]?.filePath || `subcircuits/${name}.tsx`
+  const subcircuitRegistry = buildSubcircuitRegistry(fsMap)
+  const symbolComponentRegistry = buildSymbolComponentRegistry(fsMap)
+  const filePath = subcircuitRegistry[name]?.filePath || symbolComponentRegistry[name]?.filePath || `subcircuits/${name}.tsx`
   const content = fsMap[filePath] || ''
 
-  return extractExplicitSubcircuitPorts(content) || []
+  return extractExplicitSubcircuitPorts(content) || symbolComponentRegistry[name]?.ports || []
 }
 
 const getSheetPorts = (fsMap: FSMap, sheetPath: string): string[] => {
@@ -880,9 +887,10 @@ const normalizeImportedProjectPath = (fileName: string, content: string): string
 
   if (!normalized.includes('/')) {
     const kind = inferDetectedFileKind(normalized, content)
-    if (kind === 'schematic') return `schematics/${normalized}`
+    if (kind === 'board') return `schematics/${normalized}`
     if (kind === 'subcircuit') return `subcircuits/${normalized}`
-    if (kind === 'symbol') return `symbols/${normalized}`
+    if (kind === 'symbol-component') return `symbols/${normalized}`
+    if (kind === 'raw') return `raw/${normalized}`
   }
 
   return normalized
@@ -894,6 +902,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   const isSubcircuitFile = filePath.startsWith('subcircuits/')
   const symbolNames = getWorkspaceSymbolNames(fsMap)
   const subcircuitRegistry = buildSubcircuitRegistry(fsMap)
+  const symbolComponentRegistry = buildSymbolComponentRegistry(fsMap)
   const bodyMatch = isSchematicFile
     ? content.match(/<board[^>]*>([\s\S]*?)<\/board>/)
     : content.match(/<subcircuit[^>]*>([\s\S]*?)<\/subcircuit>/)
@@ -1049,6 +1058,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
 
     const isSymbolReference = symbolNames.has(tagName)
     const subcircuitDefinition = subcircuitRegistry[tagName]
+    const symbolComponentDefinition = symbolComponentRegistry[tagName]
 
     if (isSheetReference) {
       const rawSheetSrc = String(props.src || '')
@@ -1062,9 +1072,9 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       props.netName = canonicalizeNetName(name)
       props.isSheetPort = true
     } else if (!isKnownPart && !isSymbolReference) {
-      const ports = subcircuitDefinition?.ports || getSubcircuitPorts(fsMap, tagName)
+      const ports = subcircuitDefinition?.ports || symbolComponentDefinition?.ports || getSubcircuitPorts(fsMap, tagName)
       props.subcircuitName = tagName
-      props.subcircuitPath = subcircuitDefinition?.filePath || `subcircuits/${tagName}.tsx`
+      props.subcircuitPath = subcircuitDefinition?.filePath || symbolComponentDefinition?.filePath || `subcircuits/${tagName}.tsx`
       props.ports = ports
     }
 
@@ -1774,6 +1784,12 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   lines.push(
     // Only emit collapse comments when actual visual duplicates were collapsed
     ...(duplicateNetComments.length > 0 ? duplicateNetComments.map(comment => `    ${comment}`) : []),
+    ...(() => {
+      const extractedNetlist = extractNetlistFromGraph(normalizedComponents, normalizedWires)
+      return extractedNetlist.nets
+        .filter(net => net.endpoints.length > 0)
+        .map(net => `    {/* net ${net.name}: ${net.endpoints.map(ep => `${ep.componentName}.${ep.pinName}`).join(', ')} */}`)
+    })(),
     ...renderedComponents,
     ...renderedWires
   )
@@ -3155,9 +3171,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     const preserveRequestedPath =
       !standaloneImport ||
-      (standaloneImport.kind === 'schematic' && isSchematicFilePath(state.activeFilePath)) ||
+      (standaloneImport.kind === 'board' && isSchematicFilePath(state.activeFilePath)) ||
       (standaloneImport.kind === 'subcircuit' && state.activeFilePath.startsWith('subcircuits/')) ||
-      (standaloneImport.kind === 'symbol' && state.activeFilePath.startsWith('symbols/'))
+      (standaloneImport.kind === 'symbol-component' && state.activeFilePath.startsWith('symbols/')) ||
+      (standaloneImport.kind === 'raw' && state.activeFilePath.startsWith('raw/'))
 
     const targetFilePath = getCanonicalFilePathForContent(
       state.activeFilePath,
@@ -3247,13 +3264,16 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       if (!nextOpenFilePaths.includes(targetFilePath)) {
         nextOpenFilePaths.push(targetFilePath)
       }
-      if (inferDetectedFileKind(targetFilePath, normalized) === 'schematic') {
+      if (inferDetectedFileKind(targetFilePath, normalized) === 'board') {
         importedSchematicPaths.push(targetFilePath)
       }
     })
 
     const nextFsMap = regenerateSubcircuitIndex(ensureFsMapDefaults(nextFsMapSeed))
-    validateImports(nextFsMap)
+    const brokenImports = validateImports(nextFsMap)
+    if (brokenImports.length > 0) {
+      console.warn('[batch-import] Missing dependencies (import as-is):', brokenImports)
+    }
     const importedProject = buildImportedProjectState(nextFsMap)
     console.log('[batch-import]', {
       totalFiles: Object.keys(nextFsMap).length,

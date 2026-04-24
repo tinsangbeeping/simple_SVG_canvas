@@ -67,7 +67,7 @@ export const buildProjectFileTree = (fsMap: FSMap): FileTreeNode => {
   }
 
   // Keep the expected workspace roots visible even when empty.
-  ;['schematics', 'subcircuits', 'symbols', 'editor'].forEach(ensureFolderNode)
+  ;['schematics', 'subcircuits', 'symbols', 'raw', 'editor'].forEach(ensureFolderNode)
 
   Object.entries(fsMap).forEach(([path, content]) => {
     const normalizedPath = path.replace(/^\/+|\/+$/g, '')
@@ -78,8 +78,8 @@ export const buildProjectFileTree = (fsMap: FSMap): FileTreeNode => {
     const fileName = parts[parts.length - 1]
     const actualParentFolderPath = parts.slice(0, -1).join('/')
     const parentFolderPath =
-      detectedKind === 'unknown'
-        ? actualParentFolderPath
+      detectedKind === 'raw'
+        ? actualParentFolderPath || 'raw'
         : getFolderForDetectedFileKind(detectedKind)
     const parent = ensureFolderNode(parentFolderPath)
 
@@ -119,6 +119,32 @@ export const isValidSubcircuit = (code: string): boolean => {
   if (!/<subcircuit\b/.test(code)) return false
   if (/<board\b[\s>]/.test(code)) return false
   return true
+}
+
+export const isValidSymbolComponent = (code: string): boolean => {
+  const trimmed = code.trim()
+  if (!trimmed) return false
+  return /<chip\b[\s\S]*?\bsymbol\s*=\s*\{/.test(trimmed)
+}
+
+export const extractPortsFromSymbolComponentContent = (content: string): string[] => {
+  const unique = (values: string[]) => Array.from(new Set(values.map(value => value.trim()).filter(Boolean)))
+  const symbolBody = content.match(/<symbol\b[^>]*>([\s\S]*?)<\/symbol>/)?.[1] || content
+  const taggedPorts = [...symbolBody.matchAll(/<port\b[^>]*name=["']([^"']+)["'][^>]*\/?>(?:<\/port>)?/g)]
+    .map(match => match[1])
+  return unique(taggedPorts)
+}
+
+const extractSymbolComponentName = (path: string, content: string): string => {
+  const fromFunction = content.match(/export\s+function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1]
+  if (fromFunction) return fromFunction
+
+  const fromConst = [...content.matchAll(/export\s+const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/g)]
+    .map(match => match[1])
+    .find(name => name !== 'ports')
+  if (fromConst) return fromConst
+
+  return path.split('/').pop()?.replace('.tsx', '') || 'SymbolComponent'
 }
 
 export const extractPortsFromSubcircuitContent = (content: string): string[] => {
@@ -207,7 +233,7 @@ const isWorkspaceImportPath = (importPath: string): boolean => {
   if (!importPath) return false
   if (importPath.startsWith('.') || importPath.startsWith('/')) return true
 
-  return ['schematics/', 'subcircuits/', 'symbols/', 'editor/'].some(prefix => importPath.startsWith(prefix))
+  return ['schematics/', 'subcircuits/', 'symbols/', 'raw/', 'editor/'].some(prefix => importPath.startsWith(prefix))
 }
 
 export const resolveImportPath = (fromPath: string, importPath: string, fsMap?: FSMap): string | null => {
@@ -278,7 +304,7 @@ export const detectRootSchematic = (entryFiles: string[]): string | null => {
 
 export const buildSchematicHierarchy = (fsMap: FSMap): { rootFile: string | null; hierarchy: Record<string, string[]> } => {
   const entryFiles = Object.entries(fsMap)
-    .filter(([path, code]) => inferDetectedFileKind(path, code) === 'schematic')
+    .filter(([path, code]) => inferDetectedFileKind(path, code) === 'board')
     .map(([path]) => path)
 
   const hierarchy = entryFiles.reduce<Record<string, string[]>>((acc, filePath) => {
@@ -302,6 +328,16 @@ export const buildSubcircuitRegistry = (fsMap: FSMap): SubcircuitRegistry => {
     registry[subcircuit.name] = {
       filePath: subcircuit.filePath,
       ports: subcircuit.ports
+    }
+    return registry
+  }, {})
+}
+
+export const buildSymbolComponentRegistry = (fsMap: FSMap): SubcircuitRegistry => {
+  return extractAllSymbols(fsMap).reduce<SubcircuitRegistry>((registry, symbolComponent) => {
+    registry[symbolComponent.name] = {
+      filePath: symbolComponent.filePath,
+      ports: symbolComponent.ports.map(port => port.name)
     }
     return registry
   }, {})
@@ -362,15 +398,9 @@ export const getBrokenImports = (fsMap: FSMap): Array<{ filePath: string; import
   return broken
 }
 
-export const validateImports = (fsMap: FSMap): void => {
+export const validateImports = (fsMap: FSMap): string[] => {
   const broken = getBrokenImports(fsMap)
-  if (broken.length === 0) return
-
-  const details = broken
-    .map(entry => `${entry.filePath} -> ${entry.importPath}`)
-    .join(', ')
-
-  throw new Error(`Broken imports detected: ${details}`)
+  return broken.map(entry => `${entry.filePath} -> ${entry.importPath}`)
 }
 
 export const extractBatchFilesFromZip = async (
@@ -421,7 +451,7 @@ export const buildComponentUsage = (fsMap: FSMap): ComponentUsageMap => {
   const usage: ComponentUsageMap = {}
   const trackedNames = [
     ...Object.keys(buildSubcircuitRegistry(fsMap)),
-    ...extractAllSymbols(fsMap).map(symbol => symbol.name)
+    ...extractAllSymbols(fsMap).map(symbolComponent => symbolComponent.name)
   ]
 
   trackedNames.forEach((name) => {
@@ -455,7 +485,7 @@ export const buildImportedProjectState = (fsMap: FSMap): ImportedProjectState =>
     Object.entries(buildSubcircuitRegistry(fsMap)).map(([name, info]) => [name, info.filePath])
   )
   const entryFiles = Object.values(files)
-    .filter(file => file.kind === 'schematic')
+    .filter(file => file.kind === 'board')
     .map(file => file.path)
   const { rootFile, hierarchy } = buildSchematicHierarchy(fsMap)
 
@@ -471,22 +501,16 @@ export const buildImportedProjectState = (fsMap: FSMap): ImportedProjectState =>
 }
 
 export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
-  const symbols: SymbolDefinition[] = []
+  const symbolComponents: SymbolDefinition[] = []
 
   Object.entries(fsMap).forEach(([path, content]) => {
     if (!path.endsWith('.tsx')) return
-    if (detectFileKind(content) !== 'symbol') return
+    if (detectFileKind(content) !== 'symbol-component') return
 
-    const name = path.split('/').pop()?.replace('.tsx', '') || 'Symbol'
-    const portRegex = /Port\s*name="([^"]+)"/g
-    const ports = []
-    let match
+    const name = extractSymbolComponentName(path, content)
+    const ports = extractPortsFromSymbolComponentContent(content).map(portName => ({ name: portName, x: 0, y: 0 }))
 
-    while ((match = portRegex.exec(content)) !== null) {
-      ports.push({ name: match[1], x: 0, y: 0 })
-    }
-
-    symbols.push({
+    symbolComponents.push({
       id: name,
       name,
       filePath: path,
@@ -495,7 +519,7 @@ export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
     })
   })
 
-  return symbols
+  return symbolComponents
 }
 
 export const extractAllSubcircuits = (fsMap: FSMap): SubcircuitDefinition[] => {
@@ -554,15 +578,15 @@ export const getFilesByFolder = (fsMap: FSMap, folder: 'symbols' | 'subcircuits'
 
     const detectedKind = inferDetectedFileKind(path, content)
     const matchesFolder =
-      (folder === 'schematics' && detectedKind === 'schematic') ||
+      (folder === 'schematics' && detectedKind === 'board') ||
       (folder === 'subcircuits' && detectedKind === 'subcircuit') ||
-      (folder === 'symbols' && detectedKind === 'symbol')
+      (folder === 'symbols' && detectedKind === 'symbol-component')
 
     if (matchesFolder) {
       files.push({
         path,
         content,
-        type: folder as any
+        type: (folder === 'schematics' ? 'board' : folder === 'symbols' ? 'symbol-component' : 'subcircuit') as ProjectFile['type']
       })
     }
   })

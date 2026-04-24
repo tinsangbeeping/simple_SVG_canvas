@@ -313,6 +313,9 @@ export const Canvas: React.FC = () => {
     const sheetPath = e.dataTransfer.getData('sheetPath')
     const sheetPorts = e.dataTransfer.getData('sheetPorts')
     const symbolName = e.dataTransfer.getData('symbolName')
+    const symbolComponentName = e.dataTransfer.getData('symbolComponentName')
+    const symbolComponentPath = e.dataTransfer.getData('symbolComponentPath')
+    const symbolComponentPorts = e.dataTransfer.getData('symbolComponentPorts')
     
     if (!canvasRef.current) return
 
@@ -352,6 +355,33 @@ export const Canvas: React.FC = () => {
           schY: y
         },
         tsxSnippet: ''
+      })
+      return
+    }
+
+    if (symbolComponentName) {
+      const existingNames = placedComponents.map(c => c.name)
+      let i = 1
+      let uniqueName = `${symbolComponentName}${i}`
+      while (existingNames.includes(uniqueName)) {
+        i += 1
+        uniqueName = `${symbolComponentName}${i}`
+      }
+
+      const ports = symbolComponentPorts ? JSON.parse(symbolComponentPorts) : []
+
+      addPlacedComponent({
+        id: `symc-${Date.now()}-${Math.random()}`,
+        catalogId: 'subcircuit-instance',
+        name: uniqueName,
+        props: {
+          subcircuitName: symbolComponentName,
+          subcircuitPath: symbolComponentPath || `symbols/${symbolComponentName}.tsx`,
+          ports,
+          schX: x,
+          schY: y
+        },
+        tsxSnippet: `<${symbolComponentName} name="${uniqueName}" schX={${x}} schY={${y}} />`
       })
       return
     }
@@ -787,6 +817,30 @@ export const Canvas: React.FC = () => {
     )
   }
 
+  const handleCanvasWheel = (e: React.WheelEvent) => {
+    e.preventDefault()
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 1 / 1.1
+    const newZoom = Math.min(4, Math.max(0.1, (viewport.zoom ?? 1) * zoomFactor))
+    const mouseX = e.clientX - rect.left
+    const mouseY = e.clientY - rect.top
+    const newX = mouseX - (mouseX - viewport.x) * (newZoom / (viewport.zoom ?? 1))
+    const newY = mouseY - (mouseY - viewport.y) * (newZoom / (viewport.zoom ?? 1))
+    setViewport({ x: newX, y: newY, zoom: newZoom })
+  }
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return
+      if (e.key === 'r' || e.key === 'R') {
+        setViewport({ x: 0, y: 0, zoom: 1 })
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
   return (
     <div className="canvas-container">
       <div
@@ -801,16 +855,18 @@ export const Canvas: React.FC = () => {
         onMouseUp={handleCanvasMouseUp}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
+        onWheel={handleCanvasWheel}
       >
         <div 
           className="canvas-grid"
           style={{
-            transform: `translate(${viewport.x}px, ${viewport.y}px)`,
-            backgroundPosition: `${viewport.x}px ${viewport.y}px`
+            transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom ?? 1})`,
+            backgroundPosition: `${viewport.x}px ${viewport.y}px`,
+            transformOrigin: '0 0'
           }}
         />
         
-        <div style={{ transform: `translate(${viewport.x}px, ${viewport.y}px)`, position: 'relative' }}>
+        <div style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom ?? 1})`, position: 'relative', transformOrigin: '0 0' }}>
           {/* Render wires as SVG */}
           <svg 
             style={{
@@ -898,7 +954,12 @@ export const Canvas: React.FC = () => {
                 onMouseDown={(e) => handleComponentMouseDown(e, component.id)}
                 onDoubleClick={() => {
                   if (isSubcircuit && component.props.subcircuitName) {
-                    openSubcircuitEditor(component.props.subcircuitName)
+                    const subPath = String(component.props.subcircuitPath || '')
+                    if (subPath && (subPath.startsWith('symbols/') || subPath.startsWith('raw/'))) {
+                      setActiveFilePath(subPath)
+                    } else {
+                      openSubcircuitEditor(component.props.subcircuitName)
+                    }
                   }
                   if (isSheetInstance && component.props.sheetPath) {
                     setActiveFilePath(component.props.sheetPath)
