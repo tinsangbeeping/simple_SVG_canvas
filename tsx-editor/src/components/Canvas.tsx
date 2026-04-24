@@ -592,11 +592,119 @@ export const Canvas: React.FC = () => {
     }
   }
 
+  const endpointKey = (componentId: string, pinName: string) => `${componentId}::${pinName}`
+  const endpointPosition = (key: string): { x: number; y: number } | null => {
+    const [componentId, pinName] = key.split('::')
+    const component = placedComponents.find(c => c.id === componentId)
+    if (!component) return null
+    return getPinPositionForComponent(component, pinName)
+  }
+
+  const wirePathById = new Map<string, string>()
+  const junctionDotByWireId = new Map<string, Array<{ x: number; y: number; key: string }>>()
+
+  const endpointDegree = new Map<string, number>()
+  wires.forEach((wire) => {
+    const fromKey = endpointKey(wire.from.componentId, wire.from.pinName)
+    const toKey = endpointKey(wire.to.componentId, wire.to.pinName)
+    endpointDegree.set(fromKey, (endpointDegree.get(fromKey) || 0) + 1)
+    endpointDegree.set(toKey, (endpointDegree.get(toKey) || 0) + 1)
+  })
+
+  const parent = new Map<string, string>()
+  const find = (value: string): string => {
+    const current = parent.get(value) || value
+    if (current === value) {
+      parent.set(value, value)
+      return value
+    }
+    const root = find(current)
+    parent.set(value, root)
+    return root
+  }
+  const union = (a: string, b: string) => {
+    const rootA = find(a)
+    const rootB = find(b)
+    if (rootA === rootB) return
+    if (rootA < rootB) {
+      parent.set(rootB, rootA)
+    } else {
+      parent.set(rootA, rootB)
+    }
+  }
+
+  wires.forEach((wire) => {
+    const fromKey = endpointKey(wire.from.componentId, wire.from.pinName)
+    const toKey = endpointKey(wire.to.componentId, wire.to.pinName)
+    if (!parent.has(fromKey)) parent.set(fromKey, fromKey)
+    if (!parent.has(toKey)) parent.set(toKey, toKey)
+    union(fromKey, toKey)
+  })
+
+  const groupWires = new Map<string, typeof wires>()
+  const groupEndpoints = new Map<string, Set<string>>()
+  wires.forEach((wire) => {
+    const fromKey = endpointKey(wire.from.componentId, wire.from.pinName)
+    const root = find(fromKey)
+    const existing = groupWires.get(root) || []
+    existing.push(wire)
+    groupWires.set(root, existing)
+    const endpointSet = groupEndpoints.get(root) || new Set<string>()
+    endpointSet.add(fromKey)
+    endpointSet.add(endpointKey(wire.to.componentId, wire.to.pinName))
+    groupEndpoints.set(root, endpointSet)
+  })
+
+  groupWires.forEach((group, root) => {
+    const endpoints = [...(groupEndpoints.get(root) || new Set<string>())]
+    const branchEndpoints = endpoints.filter(key => (endpointDegree.get(key) || 0) >= 3)
+
+    if (branchEndpoints.length === 0) {
+      group.forEach((wire) => {
+        const from = endpointPosition(endpointKey(wire.from.componentId, wire.from.pinName))
+        const to = endpointPosition(endpointKey(wire.to.componentId, wire.to.pinName))
+        if (!from || !to) return
+        const midX = from.x + Math.abs(to.x - from.x) / 2
+        wirePathById.set(wire.id, `M ${from.x} ${from.y} L ${midX} ${from.y} L ${midX} ${to.y} L ${to.x} ${to.y}`)
+        junctionDotByWireId.set(wire.id, [])
+      })
+      return
+    }
+
+    const positions = endpoints
+      .map((key) => ({ key, pos: endpointPosition(key) }))
+      .filter((entry): entry is { key: string; pos: { x: number; y: number } } => !!entry.pos)
+
+    if (positions.length === 0) return
+
+    const avgX = positions.reduce((sum, entry) => sum + entry.pos.x, 0) / positions.length
+    const minX = Math.min(...positions.map(entry => entry.pos.x))
+    const maxX = Math.max(...positions.map(entry => entry.pos.x))
+    let trunkX = Math.max(minX, Math.min(maxX, avgX))
+
+    if (Math.abs(maxX - minX) < 10) {
+      trunkX = avgX + 12
+    }
+
+    const groupDots = branchEndpoints
+      .map((key) => ({ key, pos: endpointPosition(key) }))
+      .filter((entry): entry is { key: string; pos: { x: number; y: number } } => !!entry.pos)
+      .map((entry) => ({ x: trunkX, y: entry.pos.y, key: `junction-${root}-${entry.key}` }))
+
+    group.forEach((wire) => {
+      const from = endpointPosition(endpointKey(wire.from.componentId, wire.from.pinName))
+      const to = endpointPosition(endpointKey(wire.to.componentId, wire.to.pinName))
+      if (!from || !to) return
+      wirePathById.set(wire.id, `M ${from.x} ${from.y} L ${trunkX} ${from.y} L ${trunkX} ${to.y} L ${to.x} ${to.y}`)
+      junctionDotByWireId.set(wire.id, groupDots)
+    })
+  })
+
   // Render wire between two pins
-  const renderWire = (wire: any, wireIndex: number) => {
+  const renderWire = (wire: any) => {
     const fromComp = placedComponents.find(c => c.id === wire.from.componentId)
     const toComp = placedComponents.find(c => c.id === wire.to.componentId)
-    
+
     if (!fromComp || !toComp) {
       console.log('Wire missing component:', wire, { fromComp, toComp })
       return null
@@ -604,110 +712,11 @@ export const Canvas: React.FC = () => {
 
     const fromPos = getPinPositionForComponent(fromComp, wire.from.pinName)
     const toPos = getPinPositionForComponent(toComp, wire.to.pinName)
-
     if (!fromPos || !toPos) return null
 
-    const endpointKey = (componentId: string, pinName: string) => `${componentId}::${pinName}`
-    const fromKey = endpointKey(wire.from.componentId, wire.from.pinName)
-    const toKey = endpointKey(wire.to.componentId, wire.to.pinName)
-
-    const endpointDegree = (key: string) => wires.reduce((count, candidate) => {
-      const cFrom = endpointKey(candidate.from.componentId, candidate.from.pinName)
-      const cTo = endpointKey(candidate.to.componentId, candidate.to.pinName)
-      return count + (cFrom === key || cTo === key ? 1 : 0)
-    }, 0)
-
-    const degreeFrom = endpointDegree(fromKey)
-    const degreeTo = endpointDegree(toKey)
-
-    const pickHubKey = (): string | null => {
-      const fromBranch = degreeFrom > 1
-      const toBranch = degreeTo > 1
-      if (!fromBranch && !toBranch) return null
-      if (fromBranch && !toBranch) return fromKey
-      if (!fromBranch && toBranch) return toKey
-      if (degreeFrom > degreeTo) return fromKey
-      if (degreeTo > degreeFrom) return toKey
-      return fromKey < toKey ? fromKey : toKey
-    }
-
-    const hubKey = pickHubKey()
-    const junctionDots: Array<{ x: number; y: number; key: string }> = []
-
-    const wirePath = (() => {
-      if (!hubKey) {
-        const wiresConnectedHere = wires.filter(w => 
-          (w.to.componentId === wire.from.componentId && w.to.pinName === wire.from.pinName) ||
-          (w.from.componentId === wire.from.componentId && w.from.pinName === wire.from.pinName)
-        )
-        const routeOffset = wiresConnectedHere.length > 1 ? (wireIndex % 3) * 25 : 0
-        const horizontalSpacing = Math.abs(toPos.x - fromPos.x) / 2
-        const midX = fromPos.x + horizontalSpacing + routeOffset
-        return `M ${fromPos.x} ${fromPos.y} L ${midX} ${fromPos.y} L ${midX} ${toPos.y} L ${toPos.x} ${toPos.y}`
-      }
-
-      const hubIsFrom = hubKey === fromKey
-      const hubPos = hubIsFrom ? fromPos : toPos
-      const targetPos = hubIsFrom ? toPos : fromPos
-
-      const hubConnections = wires.filter(candidate => {
-        const cFrom = endpointKey(candidate.from.componentId, candidate.from.pinName)
-        const cTo = endpointKey(candidate.to.componentId, candidate.to.pinName)
-        return cFrom === hubKey || cTo === hubKey
-      })
-
-      const targetXs = hubConnections
-        .map(candidate => {
-          const cFrom = endpointKey(candidate.from.componentId, candidate.from.pinName)
-          const other = cFrom === hubKey
-            ? { componentId: candidate.to.componentId, pinName: candidate.to.pinName }
-            : { componentId: candidate.from.componentId, pinName: candidate.from.pinName }
-          const otherComp = placedComponents.find(c => c.id === other.componentId)
-          return otherComp ? getPinPositionForComponent(otherComp, other.pinName)?.x : undefined
-        })
-        .filter((x): x is number => typeof x === 'number')
-
-      const avgTargetX = targetXs.length > 0
-        ? targetXs.reduce((sum, x) => sum + x, 0) / targetXs.length
-        : targetPos.x
-      const sortedTargets = [...targetXs].sort((a, b) => a - b)
-      let trunkX = avgTargetX
-
-      // Keep the shared trunk near connected targets so fanout looks compact,
-      // avoiding oversized mirrored "E" routes on simple bridge circuits.
-      if (sortedTargets.length > 0) {
-        const minTargetX = sortedTargets[0]
-        const maxTargetX = sortedTargets[sortedTargets.length - 1]
-        trunkX = Math.max(minTargetX, Math.min(maxTargetX, trunkX))
-      }
-
-      if (Math.abs(trunkX - hubPos.x) < 8) {
-        const fallbackDirection = avgTargetX >= hubPos.x ? 1 : -1
-        trunkX = hubPos.x + fallbackDirection * 8
-      }
-
-      const orderedHubIds = [...hubConnections.map(c => c.id)].sort()
-      const isHubPrimaryWire = orderedHubIds[0] === wire.id
-      if (isHubPrimaryWire && Math.abs(trunkX - hubPos.x) >= 1) {
-        junctionDots.push({ x: trunkX, y: hubPos.y, key: `junction-${hubKey}` })
-      }
-
-      const points = hubIsFrom
-        ? [
-            { x: fromPos.x, y: fromPos.y },
-            { x: trunkX, y: fromPos.y },
-            { x: trunkX, y: toPos.y },
-            { x: toPos.x, y: toPos.y }
-          ]
-        : [
-            { x: fromPos.x, y: fromPos.y },
-            { x: trunkX, y: fromPos.y },
-            { x: trunkX, y: toPos.y },
-            { x: toPos.x, y: toPos.y }
-          ]
-
-      return points.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
-    })()
+    const wirePath = wirePathById.get(wire.id)
+      || `M ${fromPos.x} ${fromPos.y} L ${(fromPos.x + toPos.x) / 2} ${fromPos.y} L ${(fromPos.x + toPos.x) / 2} ${toPos.y} L ${toPos.x} ${toPos.y}`
+    const junctionDots = junctionDotByWireId.get(wire.id) || []
 
     return (
       <g key={wire.id}>
@@ -816,7 +825,7 @@ export const Canvas: React.FC = () => {
             }}
             viewBox="0 0 4000 4000"
           >
-            {wires.map((wire, idx) => renderWire(wire, idx))}
+            {wires.map((wire) => renderWire(wire))}
             {renderTempWire()}
             
             {/* Selection box */}

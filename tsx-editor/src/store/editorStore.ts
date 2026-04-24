@@ -830,23 +830,19 @@ const mergeElectricalNets = (
 }
 
 const parseSchExpr = (expr: string, isSubcircuitFile: boolean): number => {
-  const toCanvasCoordinate = (value: number): number => {
-    // Legacy files stored canvas-pixel coordinates directly in schX/schY.
-    // Keep large literals in pixel space while converting schematic-unit values.
-    if (Math.abs(value) >= SCHEMATIC_COORD_SCALE * 10) {
-      return value
-    }
-    return schematicToPixel(value)
-  }
-
   const compact = expr.replace(/\s+/g, '')
   if (isSubcircuitFile) {
     const withOffset = compact.match(/^[xy]\+(-?\d+(?:\.\d+)?)$/)
-    if (withOffset) return toCanvasCoordinate(Number(withOffset[1]))
+    if (withOffset) return schematicToPixel(Number(withOffset[1]))
   }
 
   const num = Number(compact)
-  return Number.isFinite(num) ? toCanvasCoordinate(num) : 0
+  return Number.isFinite(num) ? schematicToPixel(num) : 0
+}
+
+const parseEditorCoordExpr = (expr: string): number => {
+  const num = Number(expr.replace(/\s+/g, ''))
+  return Number.isFinite(num) ? num : 0
 }
 
 const getUniqueImportedComponentName = (requestedName: string, usedNames: Set<string>): string => {
@@ -872,6 +868,26 @@ const getUniqueImportedComponentName = (requestedName: string, usedNames: Set<st
   return candidate
 }
 
+const normalizeImportedProjectPath = (fileName: string, content: string): string => {
+  const normalized = fileName
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+
+  if (normalized === LEGACY_MAIN_PATH) {
+    return SCHEMATIC_MAIN_PATH
+  }
+
+  if (!normalized.includes('/')) {
+    const kind = inferDetectedFileKind(normalized, content)
+    if (kind === 'schematic') return `schematics/${normalized}`
+    if (kind === 'subcircuit') return `subcircuits/${normalized}`
+    if (kind === 'symbol') return `symbols/${normalized}`
+  }
+
+  return normalized
+}
+
 const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: PlacedComponent[]; wires: WireConnection[] } => {
   const content = fsMap[filePath] || ''
   const isSchematicFile = isSchematicFilePath(filePath)
@@ -890,6 +906,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   const components: PlacedComponent[] = []
   const wires: WireConnection[] = []
   const nameToId = new Map<string, string>()
+  const importedNameMap = new Map<string, string>()
   const netRegistry = new NetRegistry()
 
   const componentRegex = /<([A-Za-z_][A-Za-z0-9_]*)\s+([^>]*?)\/>/g
@@ -905,8 +922,12 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     const leadingSegment = body.slice(parseCursor, componentMatch.index)
     const schXCommentMatches = [...leadingSegment.matchAll(/\{\/\*\s*\/\/\s*schX=\{([^}]+)\}\s*\*\/\}/g)]
     const schYCommentMatches = [...leadingSegment.matchAll(/\{\/\*\s*\/\/\s*schY=\{([^}]+)\}\s*\*\/\}/g)]
+    const editorSchXCommentMatches = [...leadingSegment.matchAll(/\{\/\*\s*\/\/\s*editorSchX=\{([^}]+)\}\s*\*\/\}/g)]
+    const editorSchYCommentMatches = [...leadingSegment.matchAll(/\{\/\*\s*\/\/\s*editorSchY=\{([^}]+)\}\s*\*\/\}/g)]
     const schXCommentExpr = schXCommentMatches.length > 0 ? schXCommentMatches[schXCommentMatches.length - 1][1] : null
     const schYCommentExpr = schYCommentMatches.length > 0 ? schYCommentMatches[schYCommentMatches.length - 1][1] : null
+    const editorSchXCommentExpr = editorSchXCommentMatches.length > 0 ? editorSchXCommentMatches[editorSchXCommentMatches.length - 1][1] : null
+    const editorSchYCommentExpr = editorSchYCommentMatches.length > 0 ? editorSchYCommentMatches[editorSchYCommentMatches.length - 1][1] : null
 
     parseCursor = componentRegex.lastIndex
 
@@ -960,13 +981,21 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       }
     }
 
-    if (props.schX === undefined && schXCommentExpr !== null) {
+    if (props.schX === undefined && editorSchXCommentExpr !== null) {
+      props.schX = parseEditorCoordExpr(editorSchXCommentExpr)
+      hasExplicitPosition = true
+      hasAnyExplicitCoordinates = true
+    } else if (props.schX === undefined && schXCommentExpr !== null) {
       props.schX = parseSchExpr(schXCommentExpr, isSubcircuitFile)
       hasExplicitPosition = true
       hasAnyExplicitCoordinates = true
     }
 
-    if (props.schY === undefined && schYCommentExpr !== null) {
+    if (props.schY === undefined && editorSchYCommentExpr !== null) {
+      props.schY = parseEditorCoordExpr(editorSchYCommentExpr)
+      hasExplicitPosition = true
+      hasAnyExplicitCoordinates = true
+    } else if (props.schY === undefined && schYCommentExpr !== null) {
       props.schY = parseSchExpr(schYCommentExpr, isSubcircuitFile)
       hasExplicitPosition = true
       hasAnyExplicitCoordinates = true
@@ -1003,7 +1032,9 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       }
     }
 
+    const originalName = name
     name = getUniqueImportedComponentName(name, usedComponentNames)
+    importedNameMap.set(originalName, name)
 
     const isCustomChip = tagName === 'chip' && (
       props.pinCount !== undefined ||
@@ -1178,8 +1209,10 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     const toNet = toRaw.match(/^net\.([A-Za-z_][A-Za-z0-9_]*)$/)
 
     if (fromRef && toRef) {
-      const fromId = nameToId.get(fromRef.componentName)
-      const toId = nameToId.get(toRef.componentName)
+      const fromComponentName = importedNameMap.get(fromRef.componentName) || fromRef.componentName
+      const toComponentName = importedNameMap.get(toRef.componentName) || toRef.componentName
+      const fromId = nameToId.get(fromComponentName)
+      const toId = nameToId.get(toComponentName)
       if (!fromId || !toId) continue
 
       wires.push({
@@ -1192,7 +1225,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     }
 
     if (fromRef && toNet) {
-      const fromId = nameToId.get(fromRef.componentName)
+      const fromComponentName = importedNameMap.get(fromRef.componentName) || fromRef.componentName
+      const fromId = nameToId.get(fromComponentName)
       if (!fromId) continue
       const near = components.find(c => c.id === fromId)
       const netId = resolveNetComponent(toNet[1], near?.props.schX || 0, near?.props.schY || 0)
@@ -1206,7 +1240,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     }
 
     if (fromNet && toRef) {
-      const toId = nameToId.get(toRef.componentName)
+      const toComponentName = importedNameMap.get(toRef.componentName) || toRef.componentName
+      const toId = nameToId.get(toComponentName)
       if (!toId) continue
       const near = components.find(c => c.id === toId)
       const netId = resolveNetComponent(fromNet[1], near?.props.schX || 0, near?.props.schY || 0)
@@ -1554,6 +1589,8 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
   const name = sanitizeComponentName(String(normalizedProps.name || component.name || ''))
   const x = pixelToSchematic(Number(normalizedProps.schX || 0))
   const y = pixelToSchematic(Number(normalizedProps.schY || 0))
+  const editorX = Number(normalizedProps.schX || 0)
+  const editorY = Number(normalizedProps.schY || 0)
   const coordX = Number.isInteger(x) ? String(x) : String(Number(x.toFixed(3)))
   const coordY = Number.isInteger(y) ? String(y) : String(Number(y.toFixed(3)))
   const schXExpr = inSubcircuitFile ? `{x + ${coordX}}` : `{${coordX}}`
@@ -1562,13 +1599,15 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
 
   if (name && component.catalogId !== 'netlabel') propLines.push(`name="${name}"`)
   if (attrs.length > 0) propLines.push(...attrs)
+  propLines.push(`schX=${schXExpr}`)
+  propLines.push(`schY=${schYExpr}`)
   const rotation = String(normalizedProps.schRotation || '0deg')
   propLines.push(`schRotation="${rotation}"`)
-  const commentX = inSubcircuitFile ? `x + ${coordX}` : coordX
-  const commentY = inSubcircuitFile ? `y + ${coordY}` : coordY
+  const commentX = Number.isInteger(editorX) ? String(editorX) : String(Number(editorX.toFixed(3)))
+  const commentY = Number.isInteger(editorY) ? String(editorY) : String(Number(editorY.toFixed(3)))
 
   if (component.catalogId === 'netport' && component.props.isSheetPort) {
-    return [`{/* // schX={${commentX}} */}`, `{/* // schY={${commentY}} */}`, `<port`, `  name="${name}"`, '/>'].join('\n')
+    return [`{/* // editorSchX={${commentX}} */}`, `{/* // editorSchY={${commentY}} */}`, `<port`, `  name="${name}"`, '/>'].join('\n')
   }
 
   if (component.catalogId === 'sheet-instance') {
@@ -1577,7 +1616,15 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
       ? `${getRelativeImportPath(activeFilePath, resolvedSheetPath)}.tsx`
       : String(normalizedProps.src || resolvedSheetPath || '')
 
-    const sheetLines = [`{/* // schX={${commentX}} */}`, `{/* // schY={${commentY}} */}`, `<sheet`, `  name="${name}"`, `  src="${sheetSrc}"`]
+    const sheetLines = [
+      `{/* // editorSchX={${commentX}} */}`,
+      `{/* // editorSchY={${commentY}} */}`,
+      `<sheet`,
+      `  name="${name}"`,
+      `  src="${sheetSrc}"`,
+      `  schX=${schXExpr}`,
+      `  schY=${schYExpr}`
+    ]
     if (rotation !== '0deg') {
       sheetLines.push(`  schRotation="${rotation}"`)
     }
@@ -1585,7 +1632,13 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
     return sheetLines.join('\n')
   }
 
-  const multiline = [`{/* // schX={${commentX}} */}`, `{/* // schY={${commentY}} */}`, `<${tagName}`, ...propLines.map(line => `  ${line}`), '/>']
+  const multiline = [
+    `{/* // editorSchX={${commentX}} */}`,
+    `{/* // editorSchY={${commentY}} */}`,
+    `<${tagName}`,
+    ...propLines.map(line => `  ${line}`),
+    '/>'
+  ]
   return multiline.join('\n')
 }
 
@@ -3182,8 +3235,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const importedSchematicPaths: string[] = []
 
     files.forEach(({ fileName, content }) => {
-      const requestedPath = fileName.includes('/') ? fileName : fileName.replace(/^\.\/+/, '')
-      const targetFilePath = getCanonicalFilePathForContent(requestedPath, content, nextFsMapSeed)
+      const requestedPath = normalizeImportedProjectPath(fileName, content)
+      const targetFilePath = getCanonicalFilePathForContent(requestedPath, content, nextFsMapSeed, {
+        preserveRequestedPath: true
+      })
       const normalized = isCanvasEditableFilePath(targetFilePath)
         ? normalizeImportedTSXContent(content, targetFilePath)
         : content
@@ -3213,13 +3268,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       || importedProject.entryFiles[0]
       || state.activeFilePath
     const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, preferredActivePath, nextOpenFilePaths)
-    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, nextFsMap)
-    const syncedFsMap = isCanvasEditableFilePath(normalizedFiles.activeFilePath)
-      ? regenerateSubcircuitIndex({
-          ...nextFsMap,
-          [normalizedFiles.activeFilePath]: generateFileTSX(normalizedFiles.activeFilePath, parsed.components, parsed.wires)
-        })
-      : nextFsMap
+    const syncedFsMapSeed = { ...nextFsMap }
+    Object.keys(syncedFsMapSeed)
+      .filter(path => isCanvasEditableFilePath(path))
+      .forEach((path) => {
+        const parsedFile = parseFileToCanvas(path, syncedFsMapSeed)
+        syncedFsMapSeed[path] = generateFileTSX(path, parsedFile.components, parsedFile.wires)
+      })
+    const syncedFsMap = regenerateSubcircuitIndex(syncedFsMapSeed)
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, syncedFsMap)
     const nextWorkspaces = {
       ...state.workspaces,
       [state.activeWorkspaceId]: {

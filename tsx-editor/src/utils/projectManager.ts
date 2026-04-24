@@ -377,23 +377,41 @@ export const extractBatchFilesFromZip = async (
   input: Blob | ArrayBuffer | Uint8Array
 ): Promise<Array<{ fileName: string; content: string }>> => {
   const zip = await JSZip.loadAsync(input)
+  const candidateEntries = Object.values(zip.files)
+    .filter(entry => !entry.dir)
+    .filter(entry => /\.tsx$/i.test(entry.name))
+
+  const normalizedNames = candidateEntries
+    .map(entry => entry.name.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, ''))
+    .filter(Boolean)
+
+  const rootSegments = normalizedNames
+    .map(name => name.split('/')[0])
+    .filter(Boolean)
+  const firstRoot = rootSegments[0] || ''
+  const hasSingleTopLevelRoot = !!firstRoot && rootSegments.every(segment => segment === firstRoot)
+
   const files: Array<{ fileName: string; content: string }> = []
 
-  for (const entry of Object.values(zip.files)) {
-    if (entry.dir) continue
-    if (!/\.(tsx|ts|json)$/i.test(entry.name)) continue
+  for (const entry of candidateEntries) {
+    const normalizedName = entry.name.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '')
+    const fileName = hasSingleTopLevelRoot
+      ? normalizedName.replace(new RegExp(`^${firstRoot}/`), '')
+      : normalizedName
+
+    if (!fileName) continue
 
     const content = await entry.async('string')
     if (!content.trim()) continue
 
     files.push({
-      fileName: entry.name,
+      fileName,
       content
     })
   }
 
   if (files.length === 0) {
-    throw new Error('No importable TSX, TS, or JSON files were found in the zip archive.')
+    throw new Error('No importable .tsx files were found in the zip archive.')
   }
 
   return files

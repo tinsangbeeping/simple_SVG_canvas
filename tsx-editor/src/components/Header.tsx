@@ -290,11 +290,13 @@ export const Header: React.FC = () => {
           .filter(Boolean)
         const tagName = c.catalogId === 'subcircuit-instance' ? c.props.subcircuitName : c.catalogId
         return [
-          `      {/* // schX={${coordX}} */}`,
-          `      {/* // schY={${coordY}} */}`,
+          `      {/* // editorSchX={${c.props.schX || 0}} */}`,
+          `      {/* // editorSchY={${c.props.schY || 0}} */}`,
           `      <${tagName}`,
           `        name="${c.name}"`,
           ...propLines.map(l => `        ${l}`),
+          `        schX={x + ${coordX}}`,
+          `        schY={y + ${coordY}}`,
           `        schRotation="${normalizedProps.schRotation || '0deg'}"`,
           `      />`
         ].join('\n')
