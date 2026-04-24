@@ -110,11 +110,20 @@ export default () => (
 )
 `
 
-  fsMap['symbols/TestSymbol.tsx'] = `export const TestSymbol = () => (
-  <symbol>
-    <line x1="-5" y1="0" x2="5" y2="0" stroke="black" />
-  </symbol>
-)
+  fsMap['symbols/TestSymbol.tsx'] = `export default function TestSymbol(props: { name: string; schX?: number; schY?: number }) {
+  return (
+    <chip
+      {...props}
+      symbol={
+        <symbol>
+          <line x1="-5" y1="0" x2="5" y2="0" stroke="black" />
+          <port name="IN" schX={-8} schY={0} />
+          <port name="OUT" schX={8} schY={0} />
+        </symbol>
+      }
+    />
+  )
+}
 `
 
   fsMap['subcircuits/EFR_t1.tsx'] = `export const ports = ["VIN", "VOUT"] as const
@@ -281,6 +290,94 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   assert(!normalizedAdvancedImport.includes('symbolPreset="npn-bce-template"'), 'wrong transistor preset should not appear')
   assert(!normalizedAdvancedImport.includes('footprint="soic8"'), 'mismatched SOIC-8 footprint should not appear')
 
+  const connectionsOnlyBoard = `export default () => (
+  <board width="120mm" height="80mm" schAutoLayoutEnabled>
+    <net name="DVDD" />
+    <net name="GND" />
+    <net name="RESETN" />
+    <net name="BODEN" />
+
+    <chip
+      name="U1C"
+      footprint="qfn32"
+      pinLabels={{
+        "1": "RESETN",
+        "2": "BODEN",
+        "3": "VREGVDD",
+        "4": "AVDD",
+        "5": "IOVDD1",
+        "6": "IOVDD2",
+        "7": "IOVDD3",
+        "8": "IOVDD4",
+        "9": "VREGSW",
+        "10": "DVDD",
+        "11": "DECOUPLE",
+        "12": "VREGVSS1",
+        "13": "VREGVSS2",
+        "14": "VREGVSS3",
+      }}
+      schPinArrangement={{
+        leftSide: {
+          direction: "top-to-bottom",
+          pins: ["1", "2", "3", "4", "5", "6", "7", "8"],
+        },
+        rightSide: {
+          direction: "top-to-bottom",
+          pins: ["9", "10", "11", "12", "13", "14"],
+        },
+      }}
+      connections={{
+        RESETN: "RESETN",
+        BODEN: "BODEN",
+        VREGVDD: "DVDD",
+        AVDD: "DVDD",
+        IOVDD1: "DVDD",
+        IOVDD2: "DVDD",
+        IOVDD3: "DVDD",
+        IOVDD4: "DVDD",
+        DVDD: "DVDD",
+        VREGVSS1: "GND",
+        VREGVSS2: "GND",
+        VREGVSS3: "GND",
+      }}
+      schX={50}
+      schY={35}
+    />
+
+    <capacitor
+      name="C1"
+      capacitance="100nF"
+      footprint="0805"
+      connections={{ pin1: "DVDD", pin2: "GND" }}
+      schX={80}
+      schY={35}
+    />
+
+    <resistor
+      name="R1"
+      resistance="10k"
+      footprint="0805"
+      connections={{ pin1: "DVDD", pin2: "BODEN" }}
+      schX={20}
+      schY={25}
+    />
+  </board>
+)`
+
+  const parsedConnectionsOnly = minimalImportExportTestUtils.parseImportedTSXToCanvas(
+    connectionsOnlyBoard,
+    SCHEMATIC_MAIN
+  )
+  assert(parsedConnectionsOnly.components.some(c => c.name === 'U1C'), 'connections-only import should parse chip component')
+  assert(parsedConnectionsOnly.wires.length >= 8, 'connections-only import should synthesize wires from connections objects')
+  const generatedConnectionsOnly = minimalImportExportTestUtils.exportCanvasToTSX(
+    SCHEMATIC_MAIN,
+    parsedConnectionsOnly.components,
+    parsedConnectionsOnly.wires
+  )
+  assert(generatedConnectionsOnly.includes('<trace from=".R1 > .pin2" to="net.BODEN" />'), 'connections-only import should emit net traces for synthesized resistor connections')
+  assert(generatedConnectionsOnly.includes('<trace from=".C1 > .pin1" to="net.DVDD" />'), 'connections-only import should emit net traces for synthesized capacitor connections')
+
   const zip = new JSZip()
   zip.file('subcircuits/ZipBlock.tsx', `export const ports = ["IN", "OUT"] as const\n\nexport function ZipBlock(props: { name: string }) {\n  return <subcircuit name={props.name}></subcircuit>\n}`)
   zip.file('schematics/ZipMain.tsx', `import { ZipBlock } from "../subcircuits/ZipBlock"\n\nexport default () => <board><ZipBlock name="X1" /></board>`)
@@ -290,13 +387,7 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
 
   const brokenFsMap = createDefaultWorkspaceFsMap('Broken Import WS')
   brokenFsMap['schematics/Broken.tsx'] = `import { MissingBlock } from "../subcircuits/MissingBlock"\n\nexport default () => <board><MissingBlock name="X1" /></board>`
-  let didRejectBrokenImport = false
-  try {
-    validateImports(brokenFsMap)
-  } catch {
-    didRejectBrokenImport = true
-  }
-  assert(didRejectBrokenImport, 'validateImports should reject missing relative imports')
+  assert(validateImports(brokenFsMap).length > 0, 'validateImports should report missing relative imports')
 
   const externalImportFsMap = createDefaultWorkspaceFsMap('External Import WS')
   externalImportFsMap['schematics/Test1.tsx'] = `import { resistor } from "@tscircuit/core"\n\nexport default () => <board><resistor name="R1" /></board>`
@@ -396,8 +487,11 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   assert(rootFolderNames.includes('schematics'), 'file tree missing schematics/ folder')
   assert(rootFolderNames.includes('subcircuits'), 'file tree missing subcircuits/ folder')
   assert(rootFolderNames.includes('symbols'), 'file tree missing symbols/ folder')
+  assert(rootFolderNames.includes('raw'), 'file tree missing raw/ folder')
   assert(rootFolderNames.includes('editor'), 'file tree missing editor/ folder')
-  assert(rootFileNames.includes('project.json'), 'file tree missing project.json')
+  const rawFolder = rootChildren.find(node => node.type === 'folder' && node.name === 'raw')
+  const rawFiles = rawFolder?.children?.filter(node => node.type === 'file').map(node => node.name) || []
+  assert(rawFiles.includes('project.json'), 'file tree missing raw/project.json')
 
   const editorFolder = rootChildren.find(node => node.type === 'folder' && node.name === 'editor')
   const editorFiles = editorFolder?.children?.filter(node => node.type === 'file').map(node => node.name) || []
@@ -436,9 +530,9 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   assert(!stateB.openFilePaths.includes('subcircuits/BlockA.tsx'), 'workspace B tabs leaked from workspace A')
 
   // Step 3A file-type classification and mode checks.
-  assert(classifyFilePath('schematics/main.tsx') === 'schematic-tsx', 'classification failed for schematics/*.tsx')
+  assert(classifyFilePath('schematics/main.tsx') === 'board-tsx', 'classification failed for schematics/*.tsx')
   assert(classifyFilePath('subcircuits/EFR_t1.tsx') === 'subcircuit-tsx', 'classification failed for subcircuits/*.tsx')
-  assert(classifyFilePath('symbols/TestSymbol.tsx') === 'symbol-tsx', 'classification failed for symbols/*.tsx')
+  assert(classifyFilePath('symbols/TestSymbol.tsx') === 'symbol-component-tsx', 'classification failed for symbols/*.tsx')
   assert(classifyFilePath('subcircuits/index.ts') === 'source-ts', 'classification failed for *.ts')
   assert(classifyFilePath('project.json') === 'json', 'classification failed for *.json')
 
@@ -508,10 +602,12 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   })
   useEditorStore.getState().addPlacedComponent({
     id: 'validate-symbol-instance',
-    catalogId: 'symbol-instance',
+    catalogId: 'subcircuit-instance',
     name: 'TestSymbol1',
     props: {
-      symbolName: 'TestSymbol',
+      subcircuitName: 'TestSymbol',
+      subcircuitPath: 'symbols/TestSymbol.tsx',
+      ports: ['IN', 'OUT'],
       schX: 120,
       schY: 180
     },
@@ -663,6 +759,186 @@ export function Debounce_led(props: { name: string }) {
   assert(candidatePins.length >= 3, 'subcircuit public-port selection should include multiple pins from the selected components')
   assert(candidatePins.some(pin => pin.pinName === 'pin2'), 'non-boundary component pins should still be exposable as public ports')
   useEditorStore.getState().cancelSubcircuitPinSelection()
+
+  // EFR import flow: relocate symbol-components, rewrite imports, prefer efr_t2_main.tsx as root,
+  // remove the invalid SWD shorts, and render named nets as local anchors instead of one giant shared wire.
+  useEditorStore.getState().createWorkspace('EFR Import WS')
+  useEditorStore.getState().importFilesBatch([
+    {
+      fileName: 'EFR32BG12P332F1024GL125_Power.tsx',
+      content: `import React from "react"
+import type { ChipProps } from "@tscircuit/props"
+
+const pinLabels = {
+  RESETN: [1],
+  BODEN: [2],
+  VREGVDD: [3],
+  AVDD: [4],
+  IOVDD_1: [5],
+  IOVDD_2: [6],
+  IOVDD_3: [7],
+  IOVDD_4: [8],
+  VREGSW: [9],
+  DVDD: [10],
+  DECOUPLE: [11],
+  VREGVSS_1: [12],
+  VREGVSS_2: [13],
+  VREGVSS_3: [14],
+} as const
+
+export default function EFR32PowerChip(
+  props: ChipProps<typeof pinLabels>,
+) {
+  return (
+    <chip
+      {...props}
+      pinLabels={pinLabels}
+      symbol={
+        <symbol>
+          <port name="RESETN" schX={-21} schY={9} direction="left" />
+          <port name="DVDD" schX={21} schY={4} direction="right" />
+          <port name="VREGVSS_1" schX={21} schY={-4} direction="right" />
+        </symbol>
+      }
+    />
+  )
+}`
+    },
+    {
+      fileName: 'EFR32PowerConnections.tsx',
+      content: `import React from "react"
+import EFR32Power from "./EFR32BG12P332F1024GL125_Power"
+
+export default function EFR32PowerConnections() {
+  return (
+    <board width="90mm" height="70mm">
+      <EFR32Power name="U1C" schX={40} schY={30} />
+      <capacitor name="C1" capacitance="100nF" schX={66} schY={27} />
+      <trace from=".U1C > .DVDD" to=".C1 > .pin1" />
+    </board>
+  )
+}`
+    },
+    {
+      fileName: 'efr_t2.tsx',
+      content: `import React from "react"
+import type { ChipProps } from "@tscircuit/props"
+
+const pinLabels = {
+  pin1: "RESETN",
+  pin2: "BODEN",
+  pin3: "VREGVDD",
+  pin4: "AVDD",
+  pin5: "IOVDD_1",
+  pin6: "IOVDD_2",
+  pin7: "IOVDD_3",
+  pin8: "IOVDD_4",
+  pin9: "VREGSW",
+  pin10: "DVDD",
+  pin11: "DECOUPLE",
+  pin12: "VREGVSS_1",
+  pin13: "VREGVSS_2",
+  pin14: "VREGVSS_3",
+} as const
+
+export default function EFR32Power(
+  props: ChipProps<typeof pinLabels>,
+) {
+  return (
+    <chip
+      {...props}
+      pinLabels={pinLabels}
+      symbol={
+        <symbol>
+          <port name="RESETN" schX={-15} schY={9} />
+          <port name="BODEN" schX={-15} schY={7} />
+          <port name="VREGVDD" schX={-15} schY={4} />
+          <port name="AVDD" schX={-15} schY={1} />
+          <port name="IOVDD_1" schX={-15} schY={-2} />
+          <port name="IOVDD_2" schX={-15} schY={-4} />
+          <port name="IOVDD_3" schX={-15} schY={-6} />
+          <port name="IOVDD_4" schX={-15} schY={-8} />
+          <port name="VREGSW" schX={15} schY={7} />
+          <port name="DVDD" schX={15} schY={4} />
+          <port name="DECOUPLE" schX={15} schY={1} />
+          <port name="VREGVSS_1" schX={15} schY={-4} />
+          <port name="VREGVSS_2" schX={15} schY={-6} />
+          <port name="VREGVSS_3" schX={15} schY={-8} />
+        </symbol>
+      }
+    />
+  )
+}`
+    },
+    {
+      fileName: 'efr_t2_main.tsx',
+      content: `import React from "react"
+import EFR32Power from "./efr_t2"
+
+export default function EFR32PowerConnections() {
+  return (
+    <board width="95mm" height="70mm">
+      <EFR32Power name="U1C" schX={48} schY={34} />
+      <resistor name="R1" resistance="NR" footprint="0402" schX={15} schY={27} />
+      <capacitor name="C8" capacitance="10uF" footprint="0402" schX={15} schY={45} />
+      <capacitor name="C9" capacitance="10nF" footprint="0402" schX={21} schY={45} />
+      <capacitor name="C10" capacitance="1uF" footprint="0402" schX={27} schY={45} />
+      <capacitor name="C11" capacitance="100nF" footprint="0402" schX={33} schY={45} />
+      <net name="DVDD" isForPower />
+      <net name="GND" isGround />
+      <net name="SWDIO" />
+      <net name="SWCLK" />
+      <trace from=".R1 > .pin1" to="net.DVDD" />
+      <trace from=".R1 > .pin2" to=".U1C > .BODEN" />
+      <trace from="net.DVDD" to=".C8 > .pin1" />
+      <trace from=".C8 > .pin1" to=".C9 > .pin1" />
+      <trace from=".C9 > .pin1" to=".C10 > .pin1" />
+      <trace from=".C10 > .pin1" to=".C11 > .pin1" />
+      <trace from=".C8 > .pin1" to=".U1C > .AVDD" />
+      <trace from=".C8 > .pin1" to=".U1C > .IOVDD_1" />
+      <trace from=".C8 > .pin1" to=".U1C > .IOVDD_2" />
+      <trace from=".C8 > .pin1" to=".U1C > .IOVDD_3" />
+      <trace from=".C8 > .pin1" to=".U1C > .IOVDD_4" />
+      <trace from=".C8 > .pin2" to="net.GND" />
+      <trace from=".C9 > .pin2" to="net.GND" />
+      <trace from=".C10 > .pin2" to="net.GND" />
+      <trace from=".C11 > .pin2" to="net.GND" />
+      <trace from="net.DVDD" to="net.SWDIO" />
+      <trace from="net.DVDD" to="net.SWCLK" />
+    </board>
+  )
+}`
+    }
+  ])
+
+  const efrState = useEditorStore.getState()
+  const efrProject = buildImportedProjectState(efrState.fsMap)
+  const efrSymbols = extractAllSymbols(efrState.fsMap)
+  const efrMain = efrState.fsMap['schematics/efr_t2_main.tsx'] || ''
+  const efrReference = efrState.fsMap['schematics/EFR32PowerConnections.tsx'] || ''
+  const efrPrimarySymbol = efrSymbols.find(symbol => symbol.name === 'EFR32Power')
+
+  assert(efrState.activeFilePath === 'schematics/efr_t2_main.tsx', 'EFR batch import should activate efr_t2_main.tsx as the main schematic')
+  assert(efrProject.rootFile === 'schematics/efr_t2_main.tsx', 'EFR project should prefer efr_t2_main.tsx as the root schematic')
+  assert(classifyFilePath('symbols/efr_t2.tsx') === 'symbol-component-tsx', 'EFR symbol file should open in source-editor mode')
+  assert(!!efrState.fsMap['symbols/efr_t2.tsx'], 'EFR symbol component should relocate under symbols/')
+  assert(!!efrState.fsMap['symbols/EFR32BG12P332F1024GL125_Power.tsx'], 'Secondary EFR symbol should relocate under symbols/')
+  assert(!!efrPrimarySymbol && efrPrimarySymbol.filePath === 'symbols/efr_t2.tsx', 'EFR32Power should prefer efr_t2.tsx as its primary symbol component')
+  assert(
+    (efrPrimarySymbol?.ports || []).some(port => port.name === 'DVDD')
+      && (efrPrimarySymbol?.ports || []).some(port => port.name === 'RESETN'),
+    'Symbol-component ports should be extracted from the embedded <symbol>'
+  )
+  assert(efrMain.includes('import EFR32Power from "../symbols/efr_t2"'), 'Main EFR board import should be rewritten to the relocated symbol path')
+  assert(efrReference.includes('import EFR32Power from "../symbols/EFR32BG12P332F1024GL125_Power"'), 'Reference EFR board import should be rewritten to the relocated secondary symbol path')
+  assert(!efrMain.includes('<trace from="net.DVDD" to="net.SWDIO" />'), 'Invalid DVDD to SWDIO short should be removed during import')
+  assert(!efrMain.includes('<trace from="net.DVDD" to="net.SWCLK" />'), 'Invalid DVDD to SWCLK short should be removed during import')
+  assert(validateImports(efrState.fsMap).length === 0, 'EFR import should not leave broken relocated imports behind')
+
+  const dvddAnchors = efrState.placedComponents.filter(component => component.catalogId === 'netport' && String(component.props.netName || component.name) === 'DVDD')
+  const gndAnchors = efrState.placedComponents.filter(component => component.catalogId === 'netport' && String(component.props.netName || component.name) === 'GND')
+  assert(dvddAnchors.length > 1, 'Named DVDD net should render as multiple local anchors, not one shared continuous wire hub')
+  assert(gndAnchors.length > 1, 'Named GND net should render as multiple local anchors, not one shared continuous wire hub')
 
   // Cross-workspace availability: a created subcircuit must persist in workspace model.
   useEditorStore.getState().createWorkspace('WS Persist A')

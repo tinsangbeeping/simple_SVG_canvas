@@ -136,6 +136,9 @@ export const extractPortsFromSymbolComponentContent = (content: string): string[
 }
 
 const extractSymbolComponentName = (path: string, content: string): string => {
+  const fromDefaultFunction = content.match(/export\s+default\s+function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1]
+  if (fromDefaultFunction) return fromDefaultFunction
+
   const fromFunction = content.match(/export\s+function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1]
   if (fromFunction) return fromFunction
 
@@ -298,14 +301,29 @@ export const detectRootSchematic = (entryFiles: string[]): string | null => {
   const preferred = [...entryFiles].find(path => /(^|\/)main\.tsx$/i.test(path))
   if (preferred) return preferred
 
+  const preferredDerivedMain = [...entryFiles].find(path => /(^|\/)[^/]*_main\.tsx$/i.test(path))
+  if (preferredDerivedMain) return preferredDerivedMain
+
   const sorted = [...entryFiles].sort((a, b) => a.localeCompare(b))
   return sorted[0] || null
 }
 
+const isPlaceholderBoardContent = (content: string): boolean => {
+  return /<board[^>]*>\s*\{\/\*\s*Add components here\s*\*\/\}\s*<\/board>/s.test(content)
+}
+
+const filterPlaceholderEntryFiles = (entryFiles: string[], fsMap: FSMap): string[] => {
+  if (entryFiles.length <= 1) return entryFiles
+
+  const nonPlaceholder = entryFiles.filter((filePath) => !isPlaceholderBoardContent(fsMap[filePath] || ''))
+  return nonPlaceholder.length > 0 ? nonPlaceholder : entryFiles
+}
+
 export const buildSchematicHierarchy = (fsMap: FSMap): { rootFile: string | null; hierarchy: Record<string, string[]> } => {
-  const entryFiles = Object.entries(fsMap)
+  const entryFiles = filterPlaceholderEntryFiles(Object.entries(fsMap)
     .filter(([path, code]) => inferDetectedFileKind(path, code) === 'board')
     .map(([path]) => path)
+  , fsMap)
 
   const hierarchy = entryFiles.reduce<Record<string, string[]>>((acc, filePath) => {
     const content = fsMap[filePath] || ''
@@ -484,9 +502,10 @@ export const buildImportedProjectState = (fsMap: FSMap): ImportedProjectState =>
   const registry = Object.fromEntries(
     Object.entries(buildSubcircuitRegistry(fsMap)).map(([name, info]) => [name, info.filePath])
   )
-  const entryFiles = Object.values(files)
+  const entryFiles = filterPlaceholderEntryFiles(Object.values(files)
     .filter(file => file.kind === 'board')
     .map(file => file.path)
+  , fsMap)
   const { rootFile, hierarchy } = buildSchematicHierarchy(fsMap)
 
   return {
