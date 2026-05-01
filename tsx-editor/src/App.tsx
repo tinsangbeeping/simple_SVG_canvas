@@ -428,17 +428,13 @@ function App() {
                       gap: 8
                     }}
                     onClick={() => {
-                      if (activeFileType === 'board-tsx') {
-                        insertSubcircuitInstance(subckt.name, { filePath: subckt.filePath })
-                      } else {
-                        setActiveFilePath(subckt.filePath)
-                      }
+                      setActiveFilePath(subckt.filePath)
                     }}
                     onDragStart={(e) => {
                       e.dataTransfer.setData('subcircuitName', subckt.name)
                       e.dataTransfer.setData('subcircuitPath', subckt.filePath)
                     }}
-                    title={activeFileType === 'board-tsx' ? 'Click to insert into the active board or drag onto canvas' : 'Open subcircuit file'}
+                    title="Open subcircuit source or drag onto the canvas to place an instance"
                   >
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       🔧 {subckt.name}{subckt.ports.length > 0 ? ` (${subckt.ports.join(', ')})` : ''}
@@ -446,16 +442,18 @@ function App() {
                         used in {componentUsage[subckt.name]?.length || 0} file(s)
                       </span>
                     </span>
-                    <button
-                      style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 12 }}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setActiveFilePath(subckt.filePath)
-                      }}
-                      title="Open subcircuit source"
-                    >
-                      ✏
-                    </button>
+                    {activeFileType === 'board-tsx' && (
+                      <button
+                        style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 12 }}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          insertSubcircuitInstance(subckt.name, { filePath: subckt.filePath })
+                        }}
+                        title="Insert instance into active board"
+                      >
+                        ➕
+                      </button>
+                    )}
                   </div>
                 ))}
 

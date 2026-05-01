@@ -143,6 +143,14 @@ export const COMPONENT_SCHEMATICS: Record<string, ComponentSchematic> = {
     ],
     symbol: 'netport'
   },
+  'public-port': {
+    width: 18,
+    height: 18,
+    pins: [
+      { name: 'port', x: 9, y: 9, side: 'left' }
+    ],
+    symbol: 'public-port'
+  },
   net: {
     width: 64,
     height: 22,

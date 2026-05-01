@@ -69,6 +69,9 @@ export const Canvas: React.FC = () => {
     if (component.catalogId === 'netport') {
       return { width: 72, height: 22 }
     }
+    if (component.catalogId === 'public-port') {
+      return { width: 18, height: 18 }
+    }
     if (component.catalogId === 'subcircuit-instance') {
       const portCount = ((component.props.ports as string[] | undefined) || []).length
       const rows = Math.max(1, Math.ceil(portCount / 2))
@@ -107,6 +110,10 @@ export const Canvas: React.FC = () => {
       return [{ name: 'port', x: 0, y: 11 }]
     }
 
+    if (component.catalogId === 'public-port') {
+      return [{ name: 'port', x: 9, y: 9 }]
+    }
+
     if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
       const ports = (component.props.ports as string[] | undefined) || []
       const width = component.catalogId === 'sheet-instance' ? 150 : 130
@@ -125,7 +132,18 @@ export const Canvas: React.FC = () => {
     }
 
     if (component.catalogId === 'symbol-instance') {
-      return []
+      const ports = ((component.props.ports as string[] | undefined) || []).map(String)
+      const width = 120
+      if (ports.length === 0) return []
+      return ports.map((portName, index) => {
+        const row = Math.floor(index / 2)
+        const isLeft = index % 2 === 0
+        return {
+          name: portName,
+          x: isLeft ? 0 : width,
+          y: 18 + row * 18
+        }
+      })
     }
 
     if (component.catalogId === 'customchip') {
@@ -529,7 +547,7 @@ export const Canvas: React.FC = () => {
         }
 
         // netport/netlabel have no catalog entry but are draggable — update position directly
-        if (comp.catalogId === 'netport' || comp.catalogId === 'net' || comp.catalogId === 'netlabel') {
+        if (comp.catalogId === 'netport' || comp.catalogId === 'public-port' || comp.catalogId === 'net' || comp.catalogId === 'netlabel') {
           if ((window as any).__NETPORT_DEBUG) console.log('[netport:drag]', { name: comp.name, newX, newY })
           updatePlacedComponent(id, { props: newProps })
           return
@@ -744,9 +762,16 @@ export const Canvas: React.FC = () => {
     const toPos = getPinPositionForComponent(toComp, wire.to.pinName)
     if (!fromPos || !toPos) return null
 
-    const wirePath = wirePathById.get(wire.id)
+    const routedPath = Array.isArray(wire.routePoints) && wire.routePoints.length >= 2
+      ? wire.routePoints.map((point: { x: number; y: number }, index: number) => (
+        `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`
+      )).join(' ')
+      : null
+
+    const wirePath = routedPath
+      || wirePathById.get(wire.id)
       || `M ${fromPos.x} ${fromPos.y} L ${(fromPos.x + toPos.x) / 2} ${fromPos.y} L ${(fromPos.x + toPos.x) / 2} ${toPos.y} L ${toPos.x} ${toPos.y}`
-    const junctionDots = junctionDotByWireId.get(wire.id) || []
+    const junctionDots = routedPath ? [] : (junctionDotByWireId.get(wire.id) || [])
 
     return (
       <g key={wire.id}>
@@ -910,9 +935,10 @@ export const Canvas: React.FC = () => {
             const isSheetInstance = component.catalogId === 'sheet-instance'
             const isSymbolInstance = component.catalogId === 'symbol-instance'
             const isNetPort = component.catalogId === 'netport'
+            const isPublicPort = component.catalogId === 'public-port'
             const isNet = component.catalogId === 'net'
 
-            if (!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !getCatalogItem(component.catalogId)) {
+            if (!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !isPublicPort && !getCatalogItem(component.catalogId)) {
               return null
             }
             
@@ -927,6 +953,8 @@ export const Canvas: React.FC = () => {
                   height,
                   background: isNetPort
                     ? 'rgba(156, 39, 176, 0.15)'
+                    : isPublicPort
+                    ? 'rgba(255, 193, 7, 0.18)'
                     : isSheetInstance
                     ? 'rgba(76, 175, 80, 0.12)'
                     : isSubcircuit
@@ -938,6 +966,8 @@ export const Canvas: React.FC = () => {
                     ? '2px solid #007acc'
                     : isNetPort
                     ? '1px dashed rgba(156, 39, 176, 0.7)'
+                    : isPublicPort
+                    ? '1px solid rgba(255, 193, 7, 0.9)'
                     : isNet
                     ? 'none'
                     : isSheetInstance
@@ -949,7 +979,7 @@ export const Canvas: React.FC = () => {
                     : '1px solid #3e3e3e',
                   cursor: cursorNearPin?.componentId === component.id ? 'crosshair' : 'move',
                   boxShadow: isSelected ? '0 0 0 2px rgba(0, 122, 204, 0.3)' : 'none',
-                  borderRadius: isSubcircuit || isSheetInstance || isNetPort ? '4px' : '0'
+                  borderRadius: isSubcircuit || isSheetInstance || isNetPort ? '4px' : isPublicPort ? '999px' : '0'
                 }}
                 onMouseDown={(e) => handleComponentMouseDown(e, component.id)}
                 onDoubleClick={() => {
@@ -979,6 +1009,8 @@ export const Canvas: React.FC = () => {
                     ? '#007acc'
                     : isNetPort
                     ? '#ce93d8'
+                    : isPublicPort
+                    ? '#ffd54f'
                     : isSheetInstance
                     ? '#81c784'
                     : isSubcircuit
@@ -989,7 +1021,7 @@ export const Canvas: React.FC = () => {
                   fontWeight: 500,
                   pointerEvents: 'none'
                 }}>
-                  {!isNet && (
+                  {!isNet && !isPublicPort && (
                     <>
                   {isSheetInstance ? '🗂 ' : isSubcircuit ? '📦 ' : isNetPort ? '🔌 ' : ''}{component.name}
                   {component.props.resistance && ` (${component.props.resistance})`}
@@ -1064,7 +1096,20 @@ export const Canvas: React.FC = () => {
                   </div>
                 )}
 
-                {!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && (
+                {isPublicPort && (
+                  <div
+                    style={{
+                      width: baseSize.width,
+                      height: baseSize.height,
+                      borderRadius: '999px',
+                      background: 'rgba(255, 193, 7, 0.28)',
+                      border: '2px solid rgba(255, 193, 7, 0.95)',
+                      boxSizing: 'border-box'
+                    }}
+                  />
+                )}
+
+                {!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !isPublicPort && (
                   <div
                     style={{
                       width: baseSize.width,
@@ -1143,10 +1188,10 @@ export const Canvas: React.FC = () => {
                       onClick={(e) => handlePinClick(e, component.id, pin.name)}
                       onDoubleClick={(e) => {
                         e.stopPropagation()
-                        if (component.catalogId === 'netport') return
+                        if (component.catalogId === 'netport' || component.catalogId === 'public-port') return
                         disconnectPin(component.id, pin.name)
                       }}
-                      title={component.catalogId === 'netport'
+                      title={component.catalogId === 'netport' || component.catalogId === 'public-port'
                         ? `${component.name}.${pin.name}`
                         : `${component.name}.${pin.name} — double-click to disconnect`}
                     />

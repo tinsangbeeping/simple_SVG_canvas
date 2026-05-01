@@ -56,6 +56,10 @@ export interface WireConnection {
     componentId: string
     pinName: string
   }
+  routePoints?: Array<{
+    x: number
+    y: number
+  }>
   tsxSnippet?: string
 }
 

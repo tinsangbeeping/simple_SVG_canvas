@@ -6,6 +6,40 @@
   border-left: 1px solid #3e3e3e;
 }
 
+.inspector-banner {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #202225;
+  border-bottom: 1px solid #3e3e3e;
+}
+
+.inspector-title {
+  color: #f0f0f0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.inspector-subtitle {
+  color: #9aa0a6;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.inspector-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.inspector-stat {
+  color: #d0d0d0;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .tab-header {
   display: flex;
   border-bottom: 1px solid #3e3e3e;

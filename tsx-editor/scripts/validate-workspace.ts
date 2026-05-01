@@ -32,6 +32,7 @@ import {
   validateImports
 } from '../src/utils/projectManager'
 import { classifyFilePath } from '../src/utils/fileClassification'
+import { layoutCircuit } from '../src/utils/elkLayout'
 
 interface WorkspaceState {
   id: string
@@ -418,8 +419,8 @@ export function DEB_CIR_1(props: { name: string; schX?: number; schY?: number })
     subcircuitPortApiTsx,
     'subcircuits/DEB_CIR_1.tsx'
   )
-  assert(parsedPortApi.components.some(c => c.catalogId === 'netport' && c.name === 'END'), 'port END should keep original public API name')
-  assert(parsedPortApi.components.some(c => c.catalogId === 'netport' && c.name === 'SIGNAL'), 'port SIGNAL should keep original public API name')
+  assert(parsedPortApi.components.some(c => c.catalogId === 'public-port' && c.name === 'END'), 'port END should keep original public API name as a public boundary port')
+  assert(parsedPortApi.components.some(c => c.catalogId === 'public-port' && c.name === 'SIGNAL'), 'port SIGNAL should keep original public API name as a public boundary port')
   assert(parsedPortApi.components.some(c => c.catalogId === 'net' && c.name === 'END'), 'net END should coexist with port END without forcing rename')
 
   const exportedPortApi = minimalImportExportTestUtils.exportCanvasToTSX(
@@ -1058,6 +1059,38 @@ export default function EFR32PowerConnections() {
   const afterCreateState = useEditorStore.getState()
   assert(!!afterCreateState.workspaces[wsPersistA].fsMap['subcircuits/PersistedBlock.tsx'], 'created subcircuit not persisted into workspace fsMap')
   assert(afterCreateState.workspaces[wsPersistA].fsMap['subcircuits/PersistedBlock.tsx'].includes('export const ports = ["IN", "OUT"] as const'), 'created subcircuit should preserve multiple public ports in file output')
+
+  const layoutProbe = await layoutCircuit(
+    [
+      {
+        id: 'elk-chip',
+        catalogId: 'customchip',
+        name: 'U_ELK',
+        props: {
+          pinCount: 2,
+          leftPins: 1,
+          rightPins: 1,
+          pinNames: 'L1=RESETN,R1=DVDD'
+        }
+      },
+      {
+        id: 'elk-r',
+        catalogId: 'resistor',
+        name: 'R_ELK',
+        props: { schX: 0, schY: 0 }
+      }
+    ] as any,
+    [
+      {
+        from: { componentId: 'elk-chip', pinName: 'DVDD' },
+        to: { componentId: 'elk-r', pinName: 'pin1' }
+      }
+    ]
+  )
+  const elkRoute = layoutProbe.routes.get('edge-0') || []
+  assert(layoutProbe.positions.has('elk-chip') && layoutProbe.positions.has('elk-r'), 'ELK should return node positions for declared components')
+  assert(elkRoute.length >= 2, 'ELK should persist orthogonal route points for declared port-to-port edges')
+  assert(elkRoute.every((point, index, points) => index === 0 || point.x === points[index - 1].x || point.y === points[index - 1].y), 'ELK routes should remain Manhattan-style between consecutive points')
 
   useEditorStore.getState().createWorkspace('WS Persist B')
   const wsPersistB = useEditorStore.getState().activeWorkspaceId

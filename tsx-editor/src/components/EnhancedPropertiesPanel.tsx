@@ -91,6 +91,10 @@ export const EnhancedPropertiesPanel: React.FC<EnhancedPropertiesPanelProps> = (
     }
   }, [activeTab, canShowSourceTab])
 
+  useEffect(() => {
+    setActiveTab('properties')
+  }, [activeFilePath])
+
   const relevantConnections = connections.filter(
     c => selectedComponent && (c.from.componentId === selectedComponent.id || c.to.componentId === selectedComponent.id)
   )
@@ -385,32 +389,43 @@ export const EnhancedPropertiesPanel: React.FC<EnhancedPropertiesPanelProps> = (
 
   return (
     <div className="enhanced-properties-panel">
+      <div className="inspector-banner">
+        <div>
+          <div className="inspector-title">Inspector</div>
+          <div className="inspector-subtitle">Properties and connections for the active file selection.</div>
+        </div>
+        <div className="inspector-stats">
+          <span className="inspector-stat">{selectedComponent ? '1 selected' : 'No selection'}</span>
+          <span className="inspector-stat">{relevantConnections.length} connection{relevantConnections.length === 1 ? '' : 's'}</span>
+        </div>
+      </div>
+
       <div className="tab-header">
         <button
           className={`tab-button ${activeTab === 'properties' ? 'active' : ''}`}
           onClick={() => setActiveTab('properties')}
         >
-          ⚙️ Properties
+          Properties
         </button>
         <button
           className={`tab-button ${activeTab === 'connections' ? 'active' : ''}`}
           onClick={() => setActiveTab('connections')}
         >
-          🔗 Connections
+          Connections
         </button>
         {canShowSourceTab && (
           <button
             className={`tab-button ${activeTab === 'tsx-code' ? 'active' : ''}`}
             onClick={() => setActiveTab('tsx-code')}
           >
-            📝 TSX
+            TSX
           </button>
         )}
         <button
           className={`tab-button ${activeTab === 'json' ? 'active' : ''}`}
           onClick={() => setActiveTab('json')}
         >
-          {} JSON
+          JSON
         </button>
       </div>
 

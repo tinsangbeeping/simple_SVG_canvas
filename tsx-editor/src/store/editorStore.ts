@@ -745,6 +745,10 @@ const isNetLikeComponent = (component: PlacedComponent | undefined): boolean => 
   return component.catalogId === 'net' || component.catalogId === 'netport'
 }
 
+const isPublicPortComponent = (component: PlacedComponent | undefined): boolean => {
+  return !!component && component.catalogId === 'public-port'
+}
+
 const getComponentNetName = (component: PlacedComponent): string => {
   return String(component.props.netName || component.props.name || component.name || '').trim().toUpperCase()
 }
@@ -795,6 +799,22 @@ const getOrphanedNetportsAfterRemovingWires = (
     .filter(component => component.catalogId === 'netport' && !connectedComponentIds.has(component.id))
     .map(component => String(component.props.netName || component.name || '').trim())
     .filter(Boolean)
+}
+
+const clearWireRoutes = (wires: WireConnection[], componentIds?: Set<string>): WireConnection[] => {
+  return wires.map((wire) => {
+    if (!wire.routePoints || wire.routePoints.length === 0) return wire
+    if (
+      componentIds
+      && !componentIds.has(wire.from.componentId)
+      && !componentIds.has(wire.to.componentId)
+    ) {
+      return wire
+    }
+
+    const { routePoints, ...rest } = wire
+    return rest
+  })
 }
 
 const mergeElectricalNets = (
@@ -1475,9 +1495,9 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       props.symbolPreset !== undefined
     )
     const isSheetReference = tagName === 'sheet'
-    const isExplicitSheetPort = tagName === 'port'
+    const isPublicPort = tagName === 'port'
     const effectiveCatalogId = isCustomChip ? 'customchip' : tagName
-    const isKnownPart = !isSheetReference && !isExplicitSheetPort && !!getCatalogItem(effectiveCatalogId)
+    const isKnownPart = !isSheetReference && !isPublicPort && !!getCatalogItem(effectiveCatalogId)
     const id = `comp-${filePath}-${name}-${components.length}`
 
     const isSymbolReference = symbolNames.has(tagName)
@@ -1495,10 +1515,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       props.sheetPath = resolvedSheetPath
       props.sheetName = name
       props.ports = resolvedSheetPath ? getSheetPorts(fsMap, resolvedSheetPath) : []
-    } else if (isExplicitSheetPort) {
-      props.netName = canonicalizeNetName(name)
-      props.isSheetPort = true
-    } else if (!isKnownPart && !isSymbolReference) {
+    } else if (isPublicPort) {
+      props.publicPortName = name
+    } else if (isSymbolReference) {
+      props.symbolName = tagName
+      props.ports = symbolComponentDefinition?.ports || importedSymbolComponentDefinition?.ports || []
+      props.subcircuitPath = importedComponentPath || symbolComponentDefinition?.filePath || `symbols/${tagName}.tsx`
+    } else if (!isKnownPart) {
       const ports = subcircuitDefinition?.ports
         || symbolComponentDefinition?.ports
         || importedSubcircuitDefinition?.ports
@@ -1514,8 +1537,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
 
     const component: PlacedComponent = {
       id,
-      catalogId: isExplicitSheetPort
-        ? 'netport'
+      catalogId: isPublicPort
+        ? 'public-port'
         : isSheetReference
         ? 'sheet-instance'
         : isKnownPart
@@ -1526,7 +1549,6 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       name,
       props: {
         ...props,
-        ...(isSymbolReference ? { symbolName: tagName } : {}),
         layoutLocked: hasExplicitPosition,
         schX: props.schX ?? 0,
         schY: props.schY ?? 0
@@ -1716,7 +1738,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   }
 
   components.forEach((component) => {
-    if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel') return
+    if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel' || component.catalogId === 'public-port') return
     const connections = component.props.connections
     if (!connections || typeof connections !== 'object' || Array.isArray(connections)) return
 
@@ -1864,6 +1886,9 @@ const getComponentTagName = (component: PlacedComponent): string => {
   if (component.catalogId === 'symbol-instance') {
     return component.props.symbolName || component.name
   }
+  if (component.catalogId === 'public-port') {
+    return 'port'
+  }
   if (component.catalogId === 'customchip') {
     return 'chip'
   }
@@ -1884,7 +1909,7 @@ const inferCommonNetForPin = (label: string): string | null => {
 }
 
 const getAutoWireTargets = (component: PlacedComponent): Array<{ pinName: string; netName: string }> => {
-  if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel') {
+  if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel' || component.catalogId === 'public-port') {
     return []
   }
 
@@ -1920,6 +1945,15 @@ const getAutoWireTargets = (component: PlacedComponent): Array<{ pinName: string
 const getSelectablePinsForComponent = (component: PlacedComponent): string[] => {
   if (component.catalogId === 'net' || component.catalogId === 'netport') {
     return ['port']
+  }
+
+  if (component.catalogId === 'public-port') {
+    return ['port']
+  }
+
+  if (component.catalogId === 'symbol-instance') {
+    const ports = ((component.props.ports as string[] | undefined) || []).map(String).filter(Boolean)
+    return ports
   }
 
   if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
@@ -2003,7 +2037,7 @@ const validateWireSelectorsForExport = (
       return
     }
 
-    if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel') {
+    if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel' || component.catalogId === 'public-port') {
       if (endpoint.pinName !== 'port') {
         errors.push(`${filePath}: invalid net selector .${component.name} > .${endpoint.pinName}`)
       }
@@ -2078,7 +2112,7 @@ const toAttrList = (props: Record<string, any>): string[] => {
 }
 
 const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: boolean, activeFilePath?: string): string => {
-  if (component.catalogId === 'netport' && !component.props.isSheetPort) return ''
+  if (component.catalogId === 'netport') return ''
 
   const tagName = getComponentTagName(component)
   const normalizedProps = { ...component.props }
@@ -2135,7 +2169,7 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
   const commentX = Number.isInteger(editorX) ? String(editorX) : String(Number(editorX.toFixed(3)))
   const commentY = Number.isInteger(editorY) ? String(editorY) : String(Number(editorY.toFixed(3)))
 
-  if (component.catalogId === 'netport' && component.props.isSheetPort) {
+  if (component.catalogId === 'public-port') {
     return [
       `<port`,
       `  name="${name}"`,
@@ -2179,6 +2213,11 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
 
 const traceEndpointRef = (component: PlacedComponent | undefined, pinName: string): string | null => {
   if (!component) return null
+  if (component.catalogId === 'public-port') {
+    const cleanName = sanitizeComponentName(String(component.name || component.props.publicPortName || ''))
+    if (!cleanName) return null
+    return `.${cleanName} > .port`
+  }
   const publicInstanceName = String(component.props.publicInstanceName || '').trim()
   const publicPortName = String(component.props.publicPortName || '').trim()
   if (publicInstanceName && publicPortName) {
@@ -2373,8 +2412,8 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   const subcircuitName = filePath.replace('subcircuits/', '').replace('.tsx', '')
   const publicPorts = Array.from(new Set(
     normalizedComponents
-      .filter(component => component.catalogId === 'netport' && !!component.props.isSheetPort)
-      .map(component => String(component.props.netName || component.props.name || component.name || '').trim())
+      .filter(component => component.catalogId === 'public-port')
+      .map(component => String(component.props.publicPortName || component.name || '').trim())
       .filter(Boolean)
   ))
   const portsConst = `export const ports = [${publicPorts.map(port => `"${port}"`).join(', ')}] as const\n\n`
@@ -2463,6 +2502,14 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
         const localNet = String(component.props.netName || component.name || '').trim()
         if (!localNet) return
         const mappedNet = pinNetMap?.get(localNet) || `${instancePrefix}${localNet}`
+        localIdMap.set(component.id, ensureNetEndpoint(mappedNet))
+        return
+      }
+
+      if (component.catalogId === 'public-port') {
+        const portName = String(component.props.publicPortName || component.name || '').trim()
+        if (!portName) return
+        const mappedNet = pinNetMap?.get(portName) || `${instancePrefix}${portName}`
         localIdMap.set(component.id, ensureNetEndpoint(mappedNet))
         return
       }
@@ -2976,6 +3023,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         props: mergedProps
       }
     })
+    const wires = clearWireRoutes(state.wires, new Set([id]))
 
     const updatedComp = placedComponents.find(c => c.id === id)
     let fsMap = state.fsMap
@@ -2996,10 +3044,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
     }
 
-    const persisted = buildPersistedCanvasState(state, { placedComponents, fsMap })
+    const persisted = buildPersistedCanvasState(state, { placedComponents, wires, fsMap })
     saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
     return {
       placedComponents,
+      wires,
       fsMap: persisted.fsMap,
       workspaces: persisted.workspaces
     }
@@ -3028,10 +3077,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
     })
 
-    const persisted = buildPersistedCanvasState(state, { placedComponents: nextComponents })
+    const wires = clearWireRoutes(state.wires, selectedSet)
+    const persisted = buildPersistedCanvasState(state, { placedComponents: nextComponents, wires })
     saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
     set({
       placedComponents: nextComponents,
+      wires,
       fsMap: persisted.fsMap,
       workspaces: persisted.workspaces
     })
@@ -3219,7 +3270,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     }
 
     set((state) => {
-      const wires = [...state.wires, newWire]
+      const wires = clearWireRoutes([...state.wires, newWire])
       const persisted = buildPersistedCanvasState(state, { wires })
       saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
       return {
@@ -3397,7 +3448,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     if (!sanitizedPort) return
 
     const sourceComponent = state.placedComponents.find(component => component.id === componentId)
-    if (!sourceComponent || sourceComponent.catalogId === 'netport' || sourceComponent.catalogId === 'subcircuit-instance') {
+    if (!sourceComponent || sourceComponent.catalogId === 'netport' || sourceComponent.catalogId === 'public-port' || sourceComponent.catalogId === 'subcircuit-instance') {
       return
     }
 
@@ -3406,53 +3457,48 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const netId = netRegistry.getNetId(sanitizedPort)
     const canonicalName = netRegistry.getNetName(netId) || sanitizedPort
 
-    let netPortComponent = nextComponents.find(
-      component => component.catalogId === 'netport' && (
-        component.props.netId === netId ||
-        component.props.netName === canonicalName ||
+    let publicPortComponent = nextComponents.find(
+      component => component.catalogId === 'public-port' && (
+        component.props.publicPortName === canonicalName ||
         component.name === canonicalName
       )
     )
 
-    if (!netPortComponent) {
-      netPortComponent = {
+    if (!publicPortComponent) {
+      publicPortComponent = {
         id: `net-${Date.now()}-${netId}`,
-        catalogId: 'netport',
+        catalogId: 'public-port',
         name: canonicalName,
         props: {
-          netId,
-          netName: canonicalName,
-          isSheetPort: true,
+          publicPortName: canonicalName,
           schX: (sourceComponent.props.schX || 0) + 24,
           schY: sourceComponent.props.schY || 0
         },
         tsxSnippet: ''
       }
-      nextComponents.push(netPortComponent)
+      nextComponents.push(publicPortComponent)
     } else {
-      netPortComponent = {
-        ...netPortComponent,
+      publicPortComponent = {
+        ...publicPortComponent,
         props: {
-          ...netPortComponent.props,
-          netId,
-          netName: canonicalName,
-          isSheetPort: true
+          ...publicPortComponent.props,
+          publicPortName: canonicalName
         }
       }
-      const existingIndex = nextComponents.findIndex(component => component.id === netPortComponent!.id)
+      const existingIndex = nextComponents.findIndex(component => component.id === publicPortComponent!.id)
       if (existingIndex >= 0) {
-        nextComponents[existingIndex] = netPortComponent
+        nextComponents[existingIndex] = publicPortComponent
       }
     }
 
     const alreadyConnected = state.wires.some(wire => (
       wire.from.componentId === componentId &&
       wire.from.pinName === pinName &&
-      wire.to.componentId === netPortComponent!.id
+      wire.to.componentId === publicPortComponent!.id
     ) || (
       wire.to.componentId === componentId &&
       wire.to.pinName === pinName &&
-      wire.from.componentId === netPortComponent!.id
+      wire.from.componentId === publicPortComponent!.id
     ))
 
     if (alreadyConnected) return
@@ -3462,7 +3508,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       {
         id: `wire-port-${Date.now()}`,
         from: { componentId, pinName },
-        to: { componentId: netPortComponent.id, pinName: 'port' },
+        to: { componentId: publicPortComponent.id, pinName: 'port' },
         tsxSnippet: ''
       }
     ]
@@ -3544,12 +3590,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       netIdToComponentId.set(netId, componentId)
       subComponents.push({
         id: componentId,
-        catalogId: 'netport',
+        catalogId: 'public-port',
         name: canonicalName,
         props: {
-          netId,
-          netName: canonicalName,
-          isSheetPort: true,
+          publicPortName: canonicalName,
           schX: (source?.props.schX || 0) + 24,
           schY: (source?.props.schY || 0) + index * 12
         },
@@ -3924,7 +3968,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   applyLayout: async () => {
     const state = get()
-    const layoutTargets = state.placedComponents.filter(c => c.catalogId !== 'netport' && !c.props.layoutLocked)
+    const layoutTargets = state.placedComponents.filter(c => (
+      c.catalogId !== 'netport'
+      && c.catalogId !== 'public-port'
+      && c.catalogId !== 'net'
+      && !c.props.layoutLocked
+    ))
     if (layoutTargets.length === 0) return
 
     try {
@@ -3938,10 +3987,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           to: { componentId: wire.to.componentId, pinName: wire.to.pinName }
         }))
 
-      const positionMap = await layoutCircuit(layoutTargets, edges)
+      const layoutResult = await layoutCircuit(layoutTargets, edges)
 
       const newComponents = state.placedComponents.map(comp => {
-        const newPos = positionMap.get(comp.id)
+        const newPos = layoutResult.positions.get(comp.id)
         if (newPos) {
           return {
             ...comp,
@@ -3955,7 +4004,20 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         return comp
       })
 
-      const persisted = buildPersistedCanvasState(state, { placedComponents: newComponents })
+      const newWires = state.wires.map((wire) => {
+        const routePoints = layoutResult.routes.get(wire.id)
+        if (!routePoints || routePoints.length < 2) {
+          const { routePoints: _routePoints, ...rest } = wire
+          return rest
+        }
+
+        return {
+          ...wire,
+          routePoints
+        }
+      })
+
+      const persisted = buildPersistedCanvasState(state, { placedComponents: newComponents, wires: newWires })
       saveWorkspacesToStorage(persisted.workspaces, state.activeWorkspaceId)
       set({
         ...persisted,
@@ -3971,7 +4033,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   autoWireCommonNets: () => {
     const state = get()
     let nextComponents = [...state.placedComponents]
-    let nextWires = [...state.wires]
+    let nextWires = clearWireRoutes(state.wires)
     let created = 0
 
     const ensureNetPort = (netName: string, x: number, y: number) => {

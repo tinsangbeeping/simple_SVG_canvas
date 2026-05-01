@@ -29,6 +29,11 @@ export interface LayoutEdge {
   targets: string[]
 }
 
+export interface LayoutResult {
+  positions: Map<string, { x: number; y: number }>
+  routes: Map<string, Array<{ x: number; y: number }>>
+}
+
 const snapToGrid = (value: number): number => Math.round((value || 0) / GRID_SIZE) * GRID_SIZE
 
 const toElkPortSide = (side?: string): ElkPortSide => {
@@ -36,6 +41,89 @@ const toElkPortSide = (side?: string): ElkPortSide => {
   if (side === 'top') return 'NORTH'
   if (side === 'bottom') return 'SOUTH'
   return 'WEST'
+}
+
+const getCustomChipLayoutPins = (component: PlacedComponent): Array<{ name: string; side: ElkPortSide }> => {
+  const pinCount = Math.max(2, Number(component.props.pinCount || 8))
+  const leftCount = Math.max(0, Number(component.props.leftPins ?? Math.ceil(pinCount / 2)))
+  const rightCount = Math.max(0, Number(component.props.rightPins ?? Math.floor(pinCount / 2)))
+  const topCount = Math.max(0, Number(component.props.topPins ?? 0))
+  const bottomCount = Math.max(0, Number(component.props.bottomPins ?? 0))
+
+  const namedMap = new Map<string, string>()
+  const rawNames = String(component.props.pinNames || '').trim()
+  if (rawNames.includes('=')) {
+    rawNames
+      .split(',')
+      .map(entry => entry.trim())
+      .filter(Boolean)
+      .forEach((entry) => {
+        const [slot, ...rest] = entry.split('=')
+        const slotKey = slot.trim().toUpperCase()
+        const pinLabel = rest.join('=').trim()
+        if (slotKey && pinLabel) {
+          namedMap.set(slotKey, pinLabel)
+        }
+      })
+  }
+
+  const legacyNames = !rawNames.includes('=')
+    ? rawNames.split(',').map(value => value.trim()).filter(Boolean)
+    : []
+  let legacyCursor = 0
+
+  const resolveName = (slotKey: string, fallback: string) => {
+    if (namedMap.has(slotKey)) return namedMap.get(slotKey) as string
+    if (legacyCursor < legacyNames.length) {
+      const next = legacyNames[legacyCursor]
+      legacyCursor += 1
+      return next
+    }
+    return fallback
+  }
+
+  const pins: Array<{ name: string; side: ElkPortSide }> = []
+  for (let i = 0; i < leftCount; i += 1) pins.push({ name: resolveName(`L${i + 1}`, `pin${i + 1}`), side: 'WEST' })
+  for (let i = 0; i < rightCount; i += 1) pins.push({ name: resolveName(`R${i + 1}`, `pin${leftCount + i + 1}`), side: 'EAST' })
+  for (let i = 0; i < topCount; i += 1) pins.push({ name: resolveName(`U${i + 1}`, `U${i + 1}`), side: 'NORTH' })
+  for (let i = 0; i < bottomCount; i += 1) pins.push({ name: resolveName(`D${i + 1}`, `D${i + 1}`), side: 'SOUTH' })
+  return pins
+}
+
+const dedupeRoutePoints = (points: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> => {
+  const deduped: Array<{ x: number; y: number }> = []
+  points.forEach((point) => {
+    const next = { x: snapToGrid(point.x), y: snapToGrid(point.y) }
+    const prev = deduped[deduped.length - 1]
+    if (!prev || prev.x !== next.x || prev.y !== next.y) {
+      deduped.push(next)
+    }
+  })
+  return deduped
+}
+
+const extractRoutePoints = (edge: any): Array<{ x: number; y: number }> => {
+  const sections = Array.isArray(edge?.sections) ? edge.sections : []
+  const routes = sections
+    .map((section: any) => {
+      const points = [section.startPoint, ...(section.bendPoints || []), section.endPoint]
+        .filter((point: any) => point && Number.isFinite(point.x) && Number.isFinite(point.y))
+        .map((point: any) => ({ x: point.x, y: point.y }))
+      return dedupeRoutePoints(points)
+    })
+    .filter((route: Array<{ x: number; y: number }>) => route.length >= 2)
+
+  if (routes.length === 0) return []
+
+  return routes.reduce((acc: Array<{ x: number; y: number }>, route) => {
+    if (acc.length === 0) return [...route]
+    const prev = acc[acc.length - 1]
+    const next = route[0]
+    if (prev.x === next.x && prev.y === next.y) {
+      return [...acc, ...route.slice(1)]
+    }
+    return [...acc, ...route]
+  }, [])
 }
 
 const getNodeSize = (component: PlacedComponent): { width: number; height: number } => {
@@ -77,7 +165,11 @@ const getLayoutPins = (component: PlacedComponent): Array<{ name: string; side: 
     return [{ name: 'port', side: component.catalogId === 'net' ? 'EAST' : 'WEST' }]
   }
 
-  if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
+  if (component.catalogId === 'public-port') {
+    return [{ name: 'port', side: 'WEST' }]
+  }
+
+  if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance' || component.catalogId === 'symbol-instance') {
     const ports = ((component.props.ports as string[] | undefined) || []).map(String)
     if (ports.length === 0) return [{ name: 'IO', side: 'WEST' }]
 
@@ -88,18 +180,7 @@ const getLayoutPins = (component: PlacedComponent): Array<{ name: string; side: 
   }
 
   if (component.catalogId === 'customchip') {
-    const pinCount = Math.max(2, Number(component.props.pinCount || 8))
-    const leftPins = Math.max(0, Number(component.props.leftPins ?? Math.ceil(pinCount / 2)))
-    const rightPins = Math.max(0, Number(component.props.rightPins ?? Math.floor(pinCount / 2)))
-    const topPins = Math.max(0, Number(component.props.topPins ?? 0))
-    const bottomPins = Math.max(0, Number(component.props.bottomPins ?? 0))
-
-    const pins: Array<{ name: string; side: ElkPortSide }> = []
-    for (let i = 0; i < leftPins; i += 1) pins.push({ name: `L${i + 1}`, side: 'WEST' })
-    for (let i = 0; i < rightPins; i += 1) pins.push({ name: `R${i + 1}`, side: 'EAST' })
-    for (let i = 0; i < topPins; i += 1) pins.push({ name: `U${i + 1}`, side: 'NORTH' })
-    for (let i = 0; i < bottomPins; i += 1) pins.push({ name: `D${i + 1}`, side: 'SOUTH' })
-    return pins
+    return getCustomChipLayoutPins(component)
   }
 
   const schematic = getPinConfig(component.catalogId)
@@ -112,37 +193,17 @@ const getLayoutPins = (component: PlacedComponent): Array<{ name: string; side: 
 export async function layoutCircuit(
   components: PlacedComponent[],
   edges: Array<{ from: { componentId: string; pinName: string }; to: { componentId: string; pinName: string } }>
-): Promise<Map<string, { x: number; y: number }>> {
+): Promise<LayoutResult> {
   try {
-    const edgePinsByComponent = new Map<string, Set<string>>()
-    edges.forEach(edge => {
-      if (!edgePinsByComponent.has(edge.from.componentId)) edgePinsByComponent.set(edge.from.componentId, new Set())
-      if (!edgePinsByComponent.has(edge.to.componentId)) edgePinsByComponent.set(edge.to.componentId, new Set())
-      edgePinsByComponent.get(edge.from.componentId)?.add(edge.from.pinName)
-      edgePinsByComponent.get(edge.to.componentId)?.add(edge.to.pinName)
-    })
-
     const nodes: LayoutNode[] = components.map((component) => {
       const size = getNodeSize(component)
-      const intrinsicPins = getLayoutPins(component)
-      const mergedPins = [...intrinsicPins]
-      const seenPins = new Set(intrinsicPins.map(pin => pin.name))
-      const edgePins = [...(edgePinsByComponent.get(component.id) || new Set<string>())]
-
-      edgePins.forEach((pinName, index) => {
-        if (seenPins.has(pinName)) return
-        seenPins.add(pinName)
-        mergedPins.push({
-          name: pinName,
-          side: index % 2 === 0 ? 'WEST' : 'EAST'
-        })
-      })
+      const declaredPins = getLayoutPins(component)
 
       return {
         id: component.id,
         width: size.width,
         height: size.height,
-        ports: mergedPins.map((pin, index) => ({
+        ports: declaredPins.map((pin, index) => ({
           id: `${component.id}.${pin.name}`,
           width: 8,
           height: 8,
@@ -201,6 +262,7 @@ export async function layoutCircuit(
 
     const result = await elk.layout(graph as any)
     const positionMap = new Map<string, { x: number; y: number }>()
+    const routeMap = new Map<string, Array<{ x: number; y: number }>>()
 
     if (result.children) {
       result.children.forEach((child: any) => {
@@ -211,10 +273,25 @@ export async function layoutCircuit(
       })
     }
 
-    return positionMap
+    if (result.edges) {
+      result.edges.forEach((edge: any) => {
+        const route = extractRoutePoints(edge)
+        if (route.length >= 2) {
+          routeMap.set(edge.id, route)
+        }
+      })
+    }
+
+    return {
+      positions: positionMap,
+      routes: routeMap
+    }
   } catch (error) {
     console.error('ELK layout error:', error)
-    return createGridLayout(components)
+    return {
+      positions: createGridLayout(components),
+      routes: new Map()
+    }
   }
 }
 
