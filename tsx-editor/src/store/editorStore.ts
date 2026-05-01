@@ -33,7 +33,7 @@ const NETPORT_DEBUG = () => typeof window !== 'undefined' && !!(window as any)._
 import { ExposedPortSelection, FSMap, PlacedComponent, EditorState, SelectedPinRef, WireConnection } from '../types/catalog'
 import { getPinConfig } from '../types/schematic'
 import { SCHEMATIC_COORD_SCALE, pixelToSchematic, schematicToPixel } from '../utils/coordinateScale'
-import { NetRegistry } from '../net/NetRegistry'
+import { inferNetRole, NetRegistry, NetRole } from '../net/NetRegistry'
 
 interface EditorStore extends EditorState {
   codeViewTab: 'source' | 'export'
@@ -749,6 +749,35 @@ const getComponentNetName = (component: PlacedComponent): string => {
   return String(component.props.netName || component.props.name || component.name || '').trim().toUpperCase()
 }
 
+const getRoleRank = (role: NetRole): number => {
+  if (role === 'ground' || role === 'power') return 3
+  if (role === 'analog') return 2
+  if (role === 'signal') return 1
+  return 0
+}
+
+const mergeNetRoles = (a: NetRole, b: NetRole): NetRole => {
+  if (a === 'unknown') return b
+  if (b === 'unknown') return a
+  return getRoleRank(b) >= getRoleRank(a) ? b : a
+}
+
+const roleFromNetComponent = (component: PlacedComponent): NetRole => {
+  const explicit = component.props.netRole as NetRole | undefined
+  if (explicit && explicit !== 'unknown') return explicit
+
+  if (component.catalogId === 'net') {
+    if (component.props.isGround) return 'ground'
+    if (component.props.isForPower) return 'power'
+  }
+
+  return inferNetRole(getComponentNetName(component))
+}
+
+const hasPowerSignalConflict = (a: NetRole, b: NetRole): boolean => {
+  return (a === 'power' && b === 'signal') || (a === 'signal' && b === 'power')
+}
+
 const getOrphanedNetportsAfterRemovingWires = (
   components: PlacedComponent[],
   currentWires: WireConnection[],
@@ -804,6 +833,7 @@ const mergeElectricalNets = (
   const aliasToCanonicalName = new Map<string, string>()
   const componentToRepresentative = new Map<string, string>()
   const representativeToCanonicalName = new Map<string, string>()
+  const representativeToRole = new Map<string, NetRole>()
 
   groups.forEach((members) => {
     const names = members
@@ -812,6 +842,7 @@ const mergeElectricalNets = (
       .sort()
 
     const canonicalName = names[0] || 'NET'
+    const canonicalRole = members.reduce<NetRole>((acc, member) => mergeNetRoles(acc, roleFromNetComponent(member)), 'unknown')
 
     members.forEach((member) => {
       const alias = getComponentNetName(member)
@@ -834,11 +865,15 @@ const mergeElectricalNets = (
       componentToRepresentative.set(member.id, representative.id)
     })
     representativeToCanonicalName.set(representative.id, canonicalName)
+    representativeToRole.set(representative.id, canonicalRole)
   })
 
   const canonicalRegistry = new NetRegistry()
-  representativeToCanonicalName.forEach((name) => {
-    canonicalRegistry.getNetId(name)
+  representativeToCanonicalName.forEach((name, representativeId) => {
+    canonicalRegistry.registerNet(name, {
+      role: representativeToRole.get(representativeId) || inferNetRole(name),
+      source: 'merge'
+    })
   })
 
   const mergedComponents = components.map((component) => {
@@ -846,6 +881,7 @@ const mergeElectricalNets = (
       const repId = componentToRepresentative.get(component.id) || component.id
       const canonicalName = representativeToCanonicalName.get(repId) || getComponentNetName(component)
       const netId = canonicalRegistry.getNetId(canonicalName)
+      const netRole = canonicalRegistry.getNetRole(netId) || inferNetRole(canonicalName)
 
       if (component.catalogId === 'net') {
         return {
@@ -854,6 +890,7 @@ const mergeElectricalNets = (
           props: {
             ...component.props,
             netId,
+            netRole,
             name: canonicalName
           }
         }
@@ -865,6 +902,7 @@ const mergeElectricalNets = (
         props: {
           ...component.props,
           netId,
+          netRole,
           netName: canonicalName
         }
       }
@@ -881,7 +919,8 @@ const mergeElectricalNets = (
         props: {
           ...component.props,
           net: canonicalName,
-          netId
+          netId,
+          netRole: canonicalRegistry.getNetRole(netId) || inferNetRole(canonicalName)
         }
       }
     }
@@ -1114,6 +1153,87 @@ const normalizeConnectionPinName = (componentProps: Record<string, any>, pinName
   return raw
 }
 
+const normalizeChipPinSlotName = (value: unknown): string => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  if (/^pin\d+$/i.test(raw)) return `pin${Number(raw.slice(3))}`
+  if (/^\d+$/.test(raw)) return `pin${Number(raw)}`
+  return raw
+}
+
+const deriveCustomChipPropsFromDeclaration = (props: Record<string, any>): Partial<Record<string, any>> => {
+  const pinLabels = props.pinLabels
+  const schPinArrangement = props.schPinArrangement
+
+  const hasPinLabels = !!pinLabels && typeof pinLabels === 'object' && !Array.isArray(pinLabels)
+  const hasPinArrangement = !!schPinArrangement && typeof schPinArrangement === 'object' && !Array.isArray(schPinArrangement)
+  if (!hasPinLabels && !hasPinArrangement) return {}
+
+  const normalizedLabels = new Map<string, string>()
+  if (hasPinLabels) {
+    Object.entries(pinLabels as Record<string, unknown>).forEach(([rawKey, rawLabel]) => {
+      const pinKey = normalizeChipPinSlotName(rawKey)
+      if (!pinKey) return
+      const pinLabel = String(rawLabel || '').trim()
+      normalizedLabels.set(pinKey, pinLabel || pinKey)
+    })
+  }
+
+  const arrangement = hasPinArrangement ? (schPinArrangement as Record<string, unknown>) : {}
+  const getSidePins = (sideKey: string): string[] => {
+    const side = arrangement[sideKey]
+    if (!side || typeof side !== 'object' || Array.isArray(side)) return []
+    const pins = (side as Record<string, unknown>).pins
+    if (!Array.isArray(pins)) return []
+    return pins
+      .map(pin => normalizeChipPinSlotName(pin))
+      .filter(Boolean)
+  }
+
+  const leftPins = getSidePins('leftSide')
+  const rightPins = getSidePins('rightSide')
+  const topPins = getSidePins('topSide')
+  const bottomPins = getSidePins('bottomSide')
+
+  const arrangedPinCount = leftPins.length + rightPins.length + topPins.length + bottomPins.length
+  const labelPins = Array.from(normalizedLabels.keys())
+  const labelPinCount = labelPins.length
+  const fallbackLegacyPinCount = Math.max(0, Number(props.pinCount || 0))
+  const effectivePinCount = Math.max(arrangedPinCount, labelPinCount, fallbackLegacyPinCount)
+
+  if (effectivePinCount <= 0) return {}
+
+  const hasExplicitArrangement = arrangedPinCount > 0
+  const effectiveLeft = hasExplicitArrangement ? leftPins.length : Math.ceil(effectivePinCount / 2)
+  const effectiveRight = hasExplicitArrangement ? rightPins.length : Math.floor(effectivePinCount / 2)
+  const effectiveTop = hasExplicitArrangement ? topPins.length : 0
+  const effectiveBottom = hasExplicitArrangement ? bottomPins.length : 0
+
+  const slotMappings: string[] = []
+  const addSideMappings = (pins: string[], sidePrefix: 'L' | 'R' | 'U' | 'D') => {
+    pins.forEach((pinName, index) => {
+      const slot = `${sidePrefix}${index + 1}`
+      slotMappings.push(`${slot}=${pinName}`)
+    })
+  }
+
+  if (hasExplicitArrangement) {
+    addSideMappings(leftPins, 'L')
+    addSideMappings(rightPins, 'R')
+    addSideMappings(topPins, 'U')
+    addSideMappings(bottomPins, 'D')
+  }
+
+  return {
+    pinCount: Math.max(2, effectivePinCount),
+    leftPins: effectiveLeft,
+    rightPins: effectiveRight,
+    topPins: effectiveTop,
+    bottomPins: effectiveBottom,
+    ...(slotMappings.length > 0 ? { pinNames: slotMappings.join(',') } : {})
+  }
+}
+
 const getUniqueImportedComponentName = (requestedName: string, usedNames: Set<string>): string => {
   const base = requestedName.trim()
   if (!base) return requestedName
@@ -1135,6 +1255,15 @@ const getUniqueImportedComponentName = (requestedName: string, usedNames: Set<st
 
   usedNames.add(candidate)
   return candidate
+}
+
+const getBoardEntrypointPath = (fsMap: FSMap, preferredPath?: string): string => {
+  const boardPaths = Object.keys(fsMap).filter(path => isSchematicFilePath(path))
+
+  if (preferredPath && boardPaths.includes(preferredPath)) return preferredPath
+  if (boardPaths.includes(SCHEMATIC_MAIN_PATH)) return SCHEMATIC_MAIN_PATH
+  if (boardPaths.includes(LEGACY_MAIN_PATH)) return LEGACY_MAIN_PATH
+  return boardPaths.sort()[0] || SCHEMATIC_MAIN_PATH
 }
 
 const normalizeImportedProjectPath = (fileName: string, content: string): string => {
@@ -1274,6 +1403,10 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       }
     }
 
+    if (tagName === 'chip') {
+      Object.assign(props, deriveCustomChipPropsFromDeclaration(props))
+    }
+
     if (props.schX === undefined && editorSchXCommentExpr !== null) {
       props.schX = parseEditorCoordExpr(editorSchXCommentExpr)
       hasExplicitPosition = true
@@ -1303,9 +1436,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     if (tagName === 'netlabel') {
       const rawNet = String(props.net || '').trim()
       if (rawNet) {
-        const netId = netRegistry.getNetId(rawNet)
+        const netId = netRegistry.registerNet(rawNet, {
+          role: inferNetRole(rawNet),
+          source: 'netlabel'
+        })
         props.netId = netId
         props.net = netRegistry.getNetName(netId) || rawNet
+        props.netRole = netRegistry.getNetRole(netId) || inferNetRole(rawNet)
       }
     }
 
@@ -1325,8 +1462,11 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       }
     }
 
+    const preservePublicName = tagName === 'port' || tagName === 'net'
     const originalName = name
-    name = getUniqueImportedComponentName(name, usedComponentNames)
+    if (!preservePublicName) {
+      name = getUniqueImportedComponentName(name, usedComponentNames)
+    }
     importedNameMap.set(originalName, name)
 
     const isCustomChip = tagName === 'chip' && (
@@ -1395,7 +1535,9 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     }
 
     components.push(component)
-    nameToId.set(name, id)
+    if (tagName !== 'net' && tagName !== 'netlabel') {
+      nameToId.set(name, id)
+    }
   }
 
   const netPortComponents = new Map<string, string>()
@@ -1405,10 +1547,14 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     if (component.catalogId === 'netport') {
       const netName = String(component.props.netName || component.props.name || component.name || '').trim()
       if (!netName) return
-      const netId = netRegistry.getNetId(netName)
+      const netId = netRegistry.registerNet(netName, {
+        role: roleFromNetComponent(component),
+        source: 'trace'
+      })
       component.props = {
         ...component.props,
         netId,
+        netRole: netRegistry.getNetRole(netId) || inferNetRole(netName),
         netName: netRegistry.getNetName(netId) || netName
       }
       if (!netPortComponents.has(netId)) {
@@ -1420,10 +1566,19 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     if (component.catalogId !== 'net') return
     const netName = String(component.props.name || component.name || '').trim()
     if (!netName) return
-    const netId = netRegistry.getNetId(netName)
+    const explicitRole: NetRole = component.props.isGround
+      ? 'ground'
+      : component.props.isForPower
+      ? 'power'
+      : inferNetRole(netName)
+    const netId = netRegistry.registerNet(netName, {
+      role: explicitRole,
+      source: 'explicit-net'
+    })
     component.props = {
       ...component.props,
-      netId
+      netId,
+      netRole: netRegistry.getNetRole(netId) || explicitRole
     }
     const bucket = explicitNetComponents.get(netId) || []
     bucket.push(component.id)
@@ -1438,8 +1593,12 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     nearY: number,
     options?: { implicitImported?: boolean }
   ): string => {
-    const netId = netRegistry.getNetId(portName)
+    const netId = netRegistry.registerNet(portName, {
+      role: inferNetRole(portName),
+      source: options?.implicitImported ? 'trace' : 'connections'
+    })
     const canonicalName = netRegistry.getNetName(netId) || portName
+    const netRole = netRegistry.getNetRole(netId) || inferNetRole(canonicalName)
 
     if (!options?.implicitImported && netPortComponents.has(netId)) {
       return netPortComponents.get(netId)!
@@ -1459,6 +1618,7 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       props: {
         netId,
         netName: canonicalName,
+        netRole,
         netAnchorKind: options?.implicitImported ? 'implicit-import' : 'generated-anchor',
         isImplicitImportedNetAnchor: !!options?.implicitImported,
         schX,
@@ -1537,6 +1697,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     }
 
     if (fromNet && toNet) {
+      const fromRole = netRegistry.getNetRole(fromNet[1]) || inferNetRole(fromNet[1])
+      const toRole = netRegistry.getNetRole(toNet[1]) || inferNetRole(toNet[1])
+      if (hasPowerSignalConflict(fromRole, toRole)) {
+        console.warn(`[net-semantics] Rejected direct power-signal short: net.${fromNet[1]} -> net.${toNet[1]}`)
+        continue
+      }
+
       const fromId = resolveNetComponent(fromNet[1], 0, 0)
       const toId = resolveNetComponent(toNet[1], 40, 0)
       wires.push({
@@ -1769,6 +1936,17 @@ const getSelectablePinsForComponent = (component: PlacedComponent): string[] => 
 
     const namedMap = new Map<string, string>()
     const rawNames = String(component.props.pinNames || '').trim()
+    const hasExplicitSideConfig =
+      component.props.leftPins !== undefined ||
+      component.props.rightPins !== undefined ||
+      component.props.topPins !== undefined ||
+      component.props.bottomPins !== undefined ||
+      rawNames.includes('=')
+
+    if (!hasExplicitSideConfig) {
+      return Array.from({ length: legacyCount }, (_, index) => `pin${index + 1}`)
+    }
+
     if (rawNames.includes('=')) {
       rawNames
         .split(',')
@@ -1810,6 +1988,42 @@ const getSelectablePinsForComponent = (component: PlacedComponent): string[] => 
   return (getPinConfig(component.catalogId)?.pins || []).map(pin => pin.name)
 }
 
+const validateWireSelectorsForExport = (
+  filePath: string,
+  components: PlacedComponent[],
+  wires: WireConnection[]
+): string[] => {
+  const byId = new Map(components.map(component => [component.id, component]))
+  const errors: string[] = []
+
+  const validateEndpoint = (endpoint: { componentId: string; pinName: string }) => {
+    const component = byId.get(endpoint.componentId)
+    if (!component) {
+      errors.push(`${filePath}: missing component id ${endpoint.componentId}`)
+      return
+    }
+
+    if (component.catalogId === 'net' || component.catalogId === 'netport' || component.catalogId === 'netlabel') {
+      if (endpoint.pinName !== 'port') {
+        errors.push(`${filePath}: invalid net selector .${component.name} > .${endpoint.pinName}`)
+      }
+      return
+    }
+
+    const validPins = new Set(getSelectablePinsForComponent(component))
+    if (validPins.size > 0 && !validPins.has(endpoint.pinName)) {
+      errors.push(`${filePath}: invalid selector .${component.name} > .${endpoint.pinName}`)
+    }
+  }
+
+  wires.forEach((wire) => {
+    validateEndpoint(wire.from)
+    validateEndpoint(wire.to)
+  })
+
+  return errors
+}
+
 const buildNetRegistryFromComponents = (components: PlacedComponent[]): NetRegistry => {
   const registry = new NetRegistry()
 
@@ -1817,7 +2031,10 @@ const buildNetRegistryFromComponents = (components: PlacedComponent[]): NetRegis
     if (component.catalogId !== 'net' && component.catalogId !== 'netport') return
     const rawName = String(component.props.netName || component.props.name || component.name || '').trim()
     if (!rawName) return
-    registry.getNetId(rawName)
+    registry.registerNet(rawName, {
+      role: roleFromNetComponent(component),
+      source: component.catalogId === 'net' ? 'explicit-net' : 'trace'
+    })
   })
 
   return registry
@@ -1919,7 +2136,13 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
   const commentY = Number.isInteger(editorY) ? String(editorY) : String(Number(editorY.toFixed(3)))
 
   if (component.catalogId === 'netport' && component.props.isSheetPort) {
-    return [`{/* // editorSchX={${commentX}} */}`, `{/* // editorSchY={${commentY}} */}`, `<port`, `  name="${name}"`, '/>'].join('\n')
+    return [
+      `<port`,
+      `  name="${name}"`,
+      `  schX=${schXExpr}`,
+      `  schY=${schYExpr}`,
+      '/>'
+    ].join('\n')
   }
 
   if (component.catalogId === 'sheet-instance') {
@@ -1956,6 +2179,15 @@ const createComponentSnippet = (component: PlacedComponent, inSubcircuitFile: bo
 
 const traceEndpointRef = (component: PlacedComponent | undefined, pinName: string): string | null => {
   if (!component) return null
+  const publicInstanceName = String(component.props.publicInstanceName || '').trim()
+  const publicPortName = String(component.props.publicPortName || '').trim()
+  if (publicInstanceName && publicPortName) {
+    const cleanInstanceName = sanitizeComponentName(publicInstanceName)
+    const cleanPortName = sanitizeComponentName(publicPortName)
+    if (cleanInstanceName && cleanPortName) {
+      return `.${cleanInstanceName} > .${cleanPortName}`
+    }
+  }
   if (component.catalogId === 'netport' || component.catalogId === 'net') {
     const rawNetName = String(component.props.netName || component.props.name || component.name || '').trim()
     if (!rawNetName) return null
@@ -2160,9 +2392,24 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
 
   const generateId = (prefix: string): string => `${prefix}-${idCounter++}`
 
-  const ensureNetEndpoint = (netName: string): string => {
+  const ensureNetEndpoint = (
+    netName: string,
+    options?: { publicRef?: { instanceName: string; portName: string } }
+  ): string => {
     const existing = netEndpointByName.get(netName)
-    if (existing) return existing
+    if (existing) {
+      if (options?.publicRef) {
+        const existingComponent = componentById.get(existing)
+        if (existingComponent) {
+          existingComponent.props = {
+            ...existingComponent.props,
+            publicInstanceName: options.publicRef.instanceName,
+            publicPortName: options.publicRef.portName
+          }
+        }
+      }
+      return existing
+    }
 
     const id = generateId('net')
     const endpoint: PlacedComponent = {
@@ -2171,6 +2418,12 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
       name: netName,
       props: {
         netName,
+        ...(options?.publicRef
+          ? {
+              publicInstanceName: options.publicRef.instanceName,
+              publicPortName: options.publicRef.portName
+            }
+          : {}),
         schX: 0,
         schY: 0
       },
@@ -2267,7 +2520,15 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
       if (component.catalogId === 'subcircuit-instance' || component.catalogId === 'sheet-instance') {
         const nestedPrefixBase = instancePrefix ? `${instancePrefix}${component.name}` : String(component.name || component.props.subcircuitName || component.props.sheetName || 'sheet')
         const netName = `${nestedPrefixBase}__${endpoint.pinName}`
-        return { componentId: ensureNetEndpoint(netName), pinName: 'port' }
+        return {
+          componentId: ensureNetEndpoint(netName, {
+            publicRef: {
+              instanceName: String(component.name || '').trim(),
+              portName: endpoint.pinName
+            }
+          }),
+          pinName: 'port'
+        }
       }
 
       const mapped = localIdMap.get(endpoint.componentId)
@@ -3415,7 +3676,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   generateFlatCircuitTSX: () => {
     const state = get()
     const syncedFiles: FSMap = { ...state.fsMap }
-    const rootPath = isSchematicFilePath(state.activeFilePath) ? state.activeFilePath : SCHEMATIC_MAIN_PATH
+    const rootPath = getBoardEntrypointPath(
+      syncedFiles,
+      isSchematicFilePath(state.activeFilePath) ? state.activeFilePath : undefined
+    )
 
     if (isCanvasEditableFilePath(state.activeFilePath)) {
       syncedFiles[state.activeFilePath] = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
@@ -3425,6 +3689,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       .filter(path => isSchematicFilePath(path) || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
       .forEach((path) => {
         const parsed = parseFileToCanvas(path, syncedFiles)
+        const selectorErrors = validateWireSelectorsForExport(path, parsed.components, parsed.wires)
+        if (selectorErrors.length > 0) {
+          throw new Error(`Invalid trace selector(s) found before export:\n${selectorErrors.join('\n')}`)
+        }
         syncedFiles[path] = generateFileTSX(path, parsed.components, parsed.wires)
       })
 
@@ -3450,7 +3718,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const files = regenerateSubcircuitIndex(syncedFiles)
     const parentPath = (isSchematicFilePath(state.activeFilePath) && files[state.activeFilePath])
       ? state.activeFilePath
-      : (files[SCHEMATIC_MAIN_PATH] ? SCHEMATIC_MAIN_PATH : LEGACY_MAIN_PATH)
+      : getBoardEntrypointPath(files)
 
     const parent = files[parentPath] || ''
     const children = Object.fromEntries(

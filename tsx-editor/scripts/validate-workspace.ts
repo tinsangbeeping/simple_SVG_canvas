@@ -369,6 +369,12 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
     SCHEMATIC_MAIN
   )
   assert(parsedConnectionsOnly.components.some(c => c.name === 'U1C'), 'connections-only import should parse chip component')
+  const parsedConnectionsChip = parsedConnectionsOnly.components.find(c => c.name === 'U1C')
+  assert(parsedConnectionsChip?.catalogId === 'customchip', 'chip declarations with pinLabels + schPinArrangement should map to customchip for rendering')
+  assert(Number(parsedConnectionsChip?.props.leftPins) === 8, 'mapped customchip should preserve left-side pin count from schPinArrangement')
+  assert(Number(parsedConnectionsChip?.props.rightPins) === 6, 'mapped customchip should preserve right-side pin count from schPinArrangement')
+  assert(String(parsedConnectionsChip?.props.pinNames || '').includes('L1=pin1'), 'mapped customchip should keep slot-to-pin mapping for selector compatibility')
+  assert(String(parsedConnectionsChip?.props.pinNames || '').includes('R6=pin14'), 'mapped customchip should keep right slot mapping through highest declared pin')
   assert(parsedConnectionsOnly.wires.length >= 8, 'connections-only import should synthesize wires from connections objects')
   const generatedConnectionsOnly = minimalImportExportTestUtils.exportCanvasToTSX(
     SCHEMATIC_MAIN,
@@ -377,6 +383,100 @@ export default function ImportedThing(props: { name: string; schX?: number; schY
   )
   assert(generatedConnectionsOnly.includes('<trace from=".R1 > .pin2" to="net.BODEN" />'), 'connections-only import should emit net traces for synthesized resistor connections')
   assert(generatedConnectionsOnly.includes('<trace from=".C1 > .pin1" to="net.DVDD" />'), 'connections-only import should emit net traces for synthesized capacitor connections')
+
+  const directShortBoard = `export default () => (
+  <board width="60mm" height="40mm">
+    <net name="DVDD" isForPower />
+    <net name="SWDIO" />
+    <trace from="net.DVDD" to="net.SWDIO" />
+  </board>
+)`
+  const parsedDirectShort = minimalImportExportTestUtils.parseImportedTSXToCanvas(directShortBoard, SCHEMATIC_MAIN)
+  const generatedDirectShort = minimalImportExportTestUtils.exportCanvasToTSX(
+    SCHEMATIC_MAIN,
+    parsedDirectShort.components,
+    parsedDirectShort.wires
+  )
+  assert(!generatedDirectShort.includes('<trace from="net.DVDD" to="net.SWDIO" />'), 'power-to-signal net short should be rejected by net semantics')
+
+  const subcircuitPortApiTsx = `export const ports = ["END", "SIGNAL"] as const
+
+export function DEB_CIR_1(props: { name: string; schX?: number; schY?: number }) {
+  const x = props.schX ?? 0
+  const y = props.schY ?? 0
+
+  return (
+    <subcircuit name={props.name}>
+      <port name="END" schX={x + 31.5} schY={y + 8} />
+      <port name="SIGNAL" schX={x + 2.4} schY={y + 0.6} />
+      <net name="END" />
+      <trace from=".END > .port" to="net.END" />
+    </subcircuit>
+  )
+}`
+  const parsedPortApi = minimalImportExportTestUtils.parseImportedTSXToCanvas(
+    subcircuitPortApiTsx,
+    'subcircuits/DEB_CIR_1.tsx'
+  )
+  assert(parsedPortApi.components.some(c => c.catalogId === 'netport' && c.name === 'END'), 'port END should keep original public API name')
+  assert(parsedPortApi.components.some(c => c.catalogId === 'netport' && c.name === 'SIGNAL'), 'port SIGNAL should keep original public API name')
+  assert(parsedPortApi.components.some(c => c.catalogId === 'net' && c.name === 'END'), 'net END should coexist with port END without forcing rename')
+
+  const exportedPortApi = minimalImportExportTestUtils.exportCanvasToTSX(
+    'subcircuits/DEB_CIR_1.tsx',
+    parsedPortApi.components,
+    parsedPortApi.wires
+  )
+  assert(exportedPortApi.includes('<port\n      name="END"\n      schX={x + 31.5}\n      schY={y + 8}\n    />'), 'export should preserve real END port coordinates in schX/schY props')
+  assert(exportedPortApi.includes('<port\n      name="SIGNAL"\n      schX={x + 2.4}\n      schY={y + 0.6}\n    />'), 'export should preserve real SIGNAL port coordinates in schX/schY props')
+  assert(!exportedPortApi.includes('name="END2"'), 'export should never auto-rename END public port to END2')
+
+  useEditorStore.getState().createWorkspace('Selector Validation WS')
+  useEditorStore.getState().setFSMap({
+    ...createDefaultWorkspaceFsMap('Selector Validation WS'),
+    'schematics/main.tsx': `export default () => (
+  <board width="120mm" height="80mm">
+    <chip name="U1" pinCount={8} schX={20} schY={20} />
+    <net name="DVDD" />
+    <trace from=".U1 > .R3" to="net.DVDD" />
+  </board>
+)`,
+    'subcircuits/DEB_CIR_1.tsx': subcircuitPortApiTsx,
+    'schematics/BoardApi.tsx': `import { DEB_CIR_1 } from "../subcircuits/DEB_CIR_1"
+
+export default () => (
+  <board width="50mm" height="50mm">
+    <DEB_CIR_1 name="DEB_CIR_12" schX={20} schY={20} />
+    <resistor name="R_API" resistance="1k" schX={40} schY={20} />
+    <trace from=".DEB_CIR_12 > .END" to=".R_API > .pin1" />
+  </board>
+)`
+  })
+
+  let didRejectInvalidSelector = false
+  try {
+    useEditorStore.getState().setActiveFilePath('schematics/main.tsx')
+    useEditorStore.getState().generateFlatCircuitTSX()
+  } catch {
+    didRejectInvalidSelector = true
+  }
+  assert(didRejectInvalidSelector, 'export should reject invalid chip selector like .U1 > .R3 when pinCount=8 only allows .pin1..pin8')
+
+  const selectorValidationFsMap = useEditorStore.getState().fsMap
+  const repairedMainSelector = String(selectorValidationFsMap['schematics/main.tsx'] || '').replace('.U1 > .R3', '.U1 > .pin3')
+  useEditorStore.getState().setFSMap({
+    ...selectorValidationFsMap,
+    'schematics/main.tsx': repairedMainSelector
+  })
+
+  useEditorStore.getState().setActiveFilePath('subcircuits/DEB_CIR_1.tsx')
+  const flatFromSubcircuitTab = useEditorStore.getState().generateFlatCircuitTSX()
+  assert(flatFromSubcircuitTab.includes('<board'), 'public export entrypoint should still resolve to a board file even when active tab is subcircuit')
+  assert(!flatFromSubcircuitTab.includes('<subcircuit name={props.name}>'), 'public export entrypoint should not be a subcircuit file')
+
+  useEditorStore.getState().setActiveFilePath('schematics/BoardApi.tsx')
+  const boardApiFlat = useEditorStore.getState().generateFlatCircuitTSX()
+  assert(boardApiFlat.includes('.DEB_CIR_12 > .END') || boardApiFlat.includes('.DEB_CIR_12>.END'), 'import/export should preserve DEB_CIR_1 public port API selector .END without renaming')
 
   const zip = new JSZip()
   zip.file('subcircuits/ZipBlock.tsx', `export const ports = ["IN", "OUT"] as const\n\nexport function ZipBlock(props: { name: string }) {\n  return <subcircuit name={props.name}></subcircuit>\n}`)
