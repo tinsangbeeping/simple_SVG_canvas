@@ -26,7 +26,7 @@ import {
   exportWorkspaceJson,
   importWorkspaceJson
 } from './workspaceFs'
-import { extractNetlistFromGraph } from '../net/extractNetlist'
+import { buildElectricalGraphModel } from '../net/electricalGraph'
 
 // Round 0 DEBUG — set to true in browser console: window.__NETPORT_DEBUG = true
 const NETPORT_DEBUG = () => typeof window !== 'undefined' && !!(window as any).__NETPORT_DEBUG
@@ -2241,91 +2241,82 @@ const traceEndpointRef = (component: PlacedComponent | undefined, pinName: strin
   return `.${cleanName} > .${pinName}`
 }
 
-const createWireSnippet = (wire: WireConnection, components: PlacedComponent[]): string => {
-  const fromComponent = components.find(c => c.id === wire.from.componentId)
-  const toComponent = components.find(c => c.id === wire.to.componentId)
-
-  const from = traceEndpointRef(fromComponent, wire.from.pinName)
-  const to = traceEndpointRef(toComponent, wire.to.pinName)
-  if (!from || !to) return ''
-
-  return `<trace from="${from}" to="${to}" />`
-}
-
-const normalizeLogicalNets = (
+const createGraphExportArtifacts = (
   components: PlacedComponent[],
   wires: WireConnection[]
 ): {
-  components: PlacedComponent[]
-  wires: WireConnection[]
-  duplicateNetComments: string[]
+  netDeclarations: string[]
+  traceSnippets: string[]
+  netComments: string[]
 } => {
-  const canonicalToPrimaryId = new Map<string, string>()
-  const duplicateToPrimaryId = new Map<string, string>()
-  const duplicateCounts = new Map<string, { displayName: string; count: number }>()
-
-  components.forEach((component) => {
-    if (component.catalogId !== 'net') return
-    const displayName = String(component.props.name || component.name || '').trim()
-    if (!displayName) return
-
-    const canonical = canonicalizeNetName(displayName)
-    const primaryId = canonicalToPrimaryId.get(canonical)
-    if (!primaryId) {
-      canonicalToPrimaryId.set(canonical, component.id)
-      return
-    }
-
-    duplicateToPrimaryId.set(component.id, primaryId)
-    const existing = duplicateCounts.get(canonical)
-    if (existing) {
-      existing.count += 1
-      return
-    }
-
-    duplicateCounts.set(canonical, { displayName, count: 1 })
-  })
-
-  const dedupedComponents = components
-    .filter(component => !duplicateToPrimaryId.has(component.id))
-    .map((component) => {
-      if (component.catalogId !== 'net') return component
-
-      const raw = String(component.props.name || component.name || '').trim()
-      if (!raw) return component
-
-      const canonical = canonicalizeNetName(raw)
-      return {
-        ...component,
-        name: canonical,
-        props: {
-          ...component.props,
-          name: canonical
-        }
-      }
-    })
-
-  const remappedWires = wires.map((wire) => {
-    const remapEndpoint = (endpoint: { componentId: string; pinName: string }) => ({
-      componentId: duplicateToPrimaryId.get(endpoint.componentId) || endpoint.componentId,
-      pinName: endpoint.pinName
-    })
-
-    return {
-      ...wire,
-      from: remapEndpoint(wire.from),
-      to: remapEndpoint(wire.to)
-    }
-  })
-
-  const duplicateNetComments = [...duplicateCounts.values()].map(({ displayName, count }) =>
-    `/* Duplicate net symbols for ${displayName} collapsed (${count + 1} visual instances -> 1 logical <net />) */`
+  const graph = buildElectricalGraphModel(components, wires)
+  const byId = new Map(components.map(component => [component.id, component]))
+  const netNameById = new Map(
+    graph.nets.map(net => [net.id, canonicalizeNetName(String(net.name || net.id || 'NET'))])
   )
 
+  const netDeclarations = graph.nets
+    .map(net => canonicalizeNetName(String(net.name || net.id || 'NET')))
+    .filter(Boolean)
+    .filter((name, index, arr) => arr.indexOf(name) === index)
+    .sort((a, b) => a.localeCompare(b))
+    .map(name => `<net name="${name}" />`)
+
+  const traceSet = new Set<string>()
+
+  graph.connections.forEach((connection) => {
+    const netName = netNameById.get(connection.netId)
+    if (!netName) return
+    const netRef = `net.${netName}`
+
+    if (connection.type === 'pin-to-net') {
+      const pinComponent = byId.get(connection.pin.componentId)
+      const pinRef = traceEndpointRef(pinComponent, connection.pin.pinName)
+      if (!pinRef) return
+      traceSet.add(`<trace from="${pinRef}" to="${netRef}" />`)
+      return
+    }
+
+    const portComponent = byId.get(connection.portId)
+    const portRef = traceEndpointRef(portComponent, 'port')
+    if (!portRef) return
+    traceSet.add(`<trace from="${portRef}" to="${netRef}" />`)
+  })
+
+  const endpointsByNet = new Map<string, string[]>()
+  graph.connections.forEach((connection) => {
+    const bucket = endpointsByNet.get(connection.netId) || []
+    if (connection.type === 'pin-to-net') {
+      const component = byId.get(connection.pin.componentId)
+      if (component) {
+        bucket.push(`${component.name}.${connection.pin.pinName}`)
+      }
+    } else {
+      const component = byId.get(connection.portId)
+      if (component) {
+        bucket.push(`port.${component.name}`)
+      }
+    }
+    endpointsByNet.set(connection.netId, bucket)
+  })
+
+  const netComments = graph.nets
+    .map(net => {
+      const displayName = netNameById.get(net.id) || net.id
+      const endpoints = (endpointsByNet.get(net.id) || []).sort((a, b) => a.localeCompare(b))
+      const aliasSuffix = net.aliases && net.aliases.length > 0
+        ? ` aliases: ${net.aliases.join(', ')}`
+        : ''
+      if (endpoints.length === 0) {
+        return `    {/* net ${displayName}${aliasSuffix} */}`
+      }
+      return `    {/* net ${displayName}: ${endpoints.join(', ')}${aliasSuffix} */}`
+    })
+
   return {
-    components: dedupedComponents,
-    wires: remappedWires,
-    duplicateNetComments
+    netDeclarations,
+    traceSnippets: [...traceSet].sort((a, b) => a.localeCompare(b)),
+    netComments
   }
 }
 
@@ -2334,35 +2325,19 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
   const inSubcircuit = !isSchematicFile
   const lines: string[] = []
 
-  const merged = mergeElectricalNets(components, wires)
-
-  const {
-    components: normalizedComponents,
-    wires: normalizedWires,
-    duplicateNetComments
-  } = normalizeLogicalNets(merged.components, merged.wires)
-
-  const renderedComponents = normalizedComponents
+  const renderedComponents = components
+    .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport')
     .map(component => createComponentSnippet(component, inSubcircuit, filePath))
     .filter(Boolean)
     .map(line => line.split('\n').map(inner => `    ${inner}`).join('\n'))
 
-  const renderedWires = normalizedWires
-    // Drop self-loop wires produced by merging two net nodes into one
-    .filter(wire => wire.from.componentId !== wire.to.componentId)
-    .map(wire => createWireSnippet(wire, normalizedComponents))
-    .filter(Boolean)
-    .map(line => `    ${line}`)
+  const graphArtifacts = createGraphExportArtifacts(components, wires)
+  const renderedNets = graphArtifacts.netDeclarations.map(line => `    ${line}`)
+  const renderedWires = graphArtifacts.traceSnippets.map(line => `    ${line}`)
 
   lines.push(
-    // Only emit collapse comments when actual visual duplicates were collapsed
-    ...(duplicateNetComments.length > 0 ? duplicateNetComments.map(comment => `    ${comment}`) : []),
-    ...(() => {
-      const extractedNetlist = extractNetlistFromGraph(normalizedComponents, normalizedWires)
-      return extractedNetlist.nets
-        .filter(net => net.endpoints.length > 0)
-        .map(net => `    {/* net ${net.name}: ${net.endpoints.map(ep => `${ep.componentName}.${ep.pinName}`).join(', ')} */}`)
-    })(),
+    ...graphArtifacts.netComments,
+    ...renderedNets,
     ...renderedComponents,
     ...renderedWires
   )
@@ -2411,7 +2386,7 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
 
   const subcircuitName = filePath.replace('subcircuits/', '').replace('.tsx', '')
   const publicPorts = Array.from(new Set(
-    normalizedComponents
+    components
       .filter(component => component.catalogId === 'public-port')
       .map(component => String(component.props.publicPortName || component.name || '').trim())
       .filter(Boolean)
@@ -2609,18 +2584,20 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
   expandFile(effectiveRootPath, 0, 0, '')
 
   const renderedComponents = flatComponents
+    .filter(component => component.catalogId !== 'net' && component.catalogId !== 'netport')
     .map(component => createComponentSnippet(component, false, effectiveRootPath))
     .filter(Boolean)
     .map(line => `    ${line}`)
 
   const allComponentsForWires = [...componentById.values()]
+  const graphArtifacts = createGraphExportArtifacts(allComponentsForWires, flatWires)
 
-  const renderedWires = flatWires
-    .map(wire => createWireSnippet(wire, allComponentsForWires))
-    .filter(Boolean)
+  const renderedNets = graphArtifacts.netDeclarations.map(line => `    ${line}`)
+
+  const renderedWires = graphArtifacts.traceSnippets
     .map(line => `    ${line}`)
 
-  const body = [...renderedComponents, ...renderedWires]
+  const body = [...graphArtifacts.netComments, ...renderedNets, ...renderedComponents, ...renderedWires]
   const content = body.length > 0 ? body.join('\n') : '    {/* Add components here */}'
 
   return `export default () => (\n  <board width="50mm" height="50mm">\n${content}\n  </board>\n)\n`
