@@ -127,6 +127,82 @@ const isCanvasEditableFilePath = (filePath: string): boolean => {
   return isCanvasEditableFileType(classifyFilePath(filePath))
 }
 
+const CANVAS_GRAPH_STATE_VERSION = 1
+
+type PersistedCanvasGraphState = {
+  version: number
+  filePath: string
+  tsxDigest: string
+  components: PlacedComponent[]
+  wires: WireConnection[]
+}
+
+const getCanvasGraphStatePath = (filePath: string): string => {
+  const encoded = encodeURIComponent(filePath)
+  return `editor/state/${encoded}.json`
+}
+
+const computeStringDigest = (input: string): string => {
+  // Lightweight deterministic hash for stale-state detection.
+  let hash = 2166136261
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i)
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
+  }
+  return (hash >>> 0).toString(16)
+}
+
+const readPersistedCanvasGraphState = (filePath: string, fsMap: FSMap): PersistedCanvasGraphState | null => {
+  const statePath = getCanvasGraphStatePath(filePath)
+  const raw = fsMap[statePath]
+  if (!raw) return null
+
+  try {
+    const parsed = JSON.parse(raw) as PersistedCanvasGraphState
+    if (parsed.version !== CANVAS_GRAPH_STATE_VERSION) return null
+    if (parsed.filePath !== filePath) return null
+    if (!Array.isArray(parsed.components) || !Array.isArray(parsed.wires)) return null
+
+    const content = fsMap[filePath] || ''
+    const digest = computeStringDigest(content)
+    if (parsed.tsxDigest !== digest) return null
+
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+const writePersistedCanvasGraphState = (
+  fsMap: FSMap,
+  filePath: string,
+  components: PlacedComponent[],
+  wires: WireConnection[]
+): FSMap => {
+  const statePath = getCanvasGraphStatePath(filePath)
+  const content = fsMap[filePath] || ''
+  const snapshot: PersistedCanvasGraphState = {
+    version: CANVAS_GRAPH_STATE_VERSION,
+    filePath,
+    tsxDigest: computeStringDigest(content),
+    components: components.map(component => ({
+      ...component,
+      props: { ...component.props }
+    })),
+    wires: wires.map(wire => ({
+      ...wire,
+      from: { ...wire.from },
+      to: { ...wire.to },
+      routePoints: wire.routePoints ? wire.routePoints.map(point => ({ ...point })) : undefined
+    }))
+  }
+
+  return {
+    ...fsMap,
+    [statePath]: JSON.stringify(snapshot)
+  }
+}
+
 const validateFilePlacement = (filePath: string, content: string): void => {
   const kind = inferDetectedFileKind(filePath, content)
   if (kind === 'raw') return
@@ -1860,6 +1936,22 @@ const getCanvasStateForFile = (filePath: string, fsMap: FSMap): { components: Pl
     return { components: [], wires: [] }
   }
 
+  const persisted = readPersistedCanvasGraphState(filePath, fsMap)
+  if (persisted) {
+    return {
+      components: persisted.components.map(component => ({
+        ...component,
+        props: { ...component.props }
+      })),
+      wires: persisted.wires.map(wire => ({
+        ...wire,
+        from: { ...wire.from },
+        to: { ...wire.to },
+        routePoints: wire.routePoints ? wire.routePoints.map(point => ({ ...point })) : undefined
+      }))
+    }
+  }
+
   return parseFileToCanvas(filePath, fsMap)
 }
 
@@ -1869,10 +1961,12 @@ const syncActiveCanvasFile = (state: Pick<EditorState, 'activeFilePath' | 'fsMap
   }
 
   const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
-  return regenerateSubcircuitIndex({
+  const withSource = regenerateSubcircuitIndex({
     ...state.fsMap,
     [state.activeFilePath]: currentContent
   })
+
+  return writePersistedCanvasGraphState(withSource, state.activeFilePath, state.placedComponents, state.wires)
 }
 
 const buildPersistedCanvasState = (
@@ -2459,7 +2553,7 @@ const generateFlatMainTSX = (fsMap: FSMap, rootPath = SCHEMATIC_MAIN_PATH): stri
   const parseCached = (filePath: string): { components: PlacedComponent[]; wires: WireConnection[] } => {
     const existing = parsedCache.get(filePath)
     if (existing) return existing
-    const parsed = parseFileToCanvas(filePath, fsMap)
+    const parsed = getCanvasStateForFile(filePath, fsMap)
     parsedCache.set(filePath, parsed)
     return parsed
   }
@@ -2655,18 +2749,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const state = get()
     const normalizedFiles = normalizeWorkspaceFileSelection(next, state.activeFilePath, state.openFilePaths)
     const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, next)
+    const withSnapshot = isCanvasEditableFilePath(normalizedFiles.activeFilePath)
+      ? writePersistedCanvasGraphState(next, normalizedFiles.activeFilePath, parsed.components, parsed.wires)
+      : next
     const nextWorkspaces = {
       ...state.workspaces,
       [state.activeWorkspaceId]: {
         ...state.workspaces[state.activeWorkspaceId],
-        fsMap: next,
+        fsMap: withSnapshot,
         activeFilePath: normalizedFiles.activeFilePath,
         openFilePaths: normalizedFiles.openFilePaths
       }
     }
     saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
     set({
-      fsMap: next,
+      fsMap: withSnapshot,
       workspaces: nextWorkspaces,
       activeFilePath: normalizedFiles.activeFilePath,
       openFilePaths: normalizedFiles.openFilePaths,
@@ -2706,22 +2803,25 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       ? state.openFilePaths
       : [...state.openFilePaths, filePath]
     const normalizedFiles = normalizeWorkspaceFileSelection(fsMap, filePath, nextOpenFilePaths)
+    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, fsMap)
+    const nextFsMap = isCanvasEditableFilePath(normalizedFiles.activeFilePath)
+      ? writePersistedCanvasGraphState(fsMap, normalizedFiles.activeFilePath, parsed.components, parsed.wires)
+      : fsMap
+    const renormalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, normalizedFiles.activeFilePath, normalizedFiles.openFilePaths)
     const nextWorkspaces = {
       ...state.workspaces,
       [state.activeWorkspaceId]: {
         ...state.workspaces[state.activeWorkspaceId],
-        fsMap,
-        activeFilePath: normalizedFiles.activeFilePath,
-        openFilePaths: normalizedFiles.openFilePaths
+        fsMap: nextFsMap,
+        activeFilePath: renormalizedFiles.activeFilePath,
+        openFilePaths: renormalizedFiles.openFilePaths
       }
     }
-
-    const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, fsMap)
     saveWorkspacesToStorage(nextWorkspaces, state.activeWorkspaceId)
     set({
-      fsMap,
-      activeFilePath: normalizedFiles.activeFilePath,
-      openFilePaths: normalizedFiles.openFilePaths,
+      fsMap: nextFsMap,
+      activeFilePath: renormalizedFiles.activeFilePath,
+      openFilePaths: renormalizedFiles.openFilePaths,
       workspaces: nextWorkspaces,
       placedComponents: parsed.components,
       wires: parsed.wires,
@@ -2748,9 +2848,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       saveFSMapToStorage(fsMap)
     }
 
-    const parsed = parseFileToCanvas(filePath, fsMap)
+    const parsed = getCanvasStateForFile(filePath, fsMap)
+    const fsMapWithSnapshot = writePersistedCanvasGraphState(fsMap, filePath, parsed.components, parsed.wires)
     set({
-      fsMap,
+      fsMap: fsMapWithSnapshot,
       activeFilePath: filePath,
       breadcrumbStack: [...state.breadcrumbStack, state.activeFilePath],
       placedComponents: parsed.components,
@@ -3716,12 +3817,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     Object.keys(syncedFiles)
       .filter(path => isSchematicFilePath(path) || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
       .forEach((path) => {
-        const parsed = parseFileToCanvas(path, syncedFiles)
+        const parsed = getCanvasStateForFile(path, syncedFiles)
         const selectorErrors = validateWireSelectorsForExport(path, parsed.components, parsed.wires)
         if (selectorErrors.length > 0) {
           throw new Error(`Invalid trace selector(s) found before export:\n${selectorErrors.join('\n')}`)
         }
-        syncedFiles[path] = generateFileTSX(path, parsed.components, parsed.wires)
+        const generated = generateFileTSX(path, parsed.components, parsed.wires)
+        syncedFiles[path] = generated
+        const withSnapshot = writePersistedCanvasGraphState(syncedFiles, path, parsed.components, parsed.wires)
+        Object.assign(syncedFiles, withSnapshot)
       })
 
     const files = regenerateSubcircuitIndex(syncedFiles)
@@ -3739,8 +3843,11 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     Object.keys(syncedFiles)
       .filter(path => isSchematicFilePath(path) || (path.startsWith('subcircuits/') && path.endsWith('.tsx')))
       .forEach((path) => {
-        const parsed = parseFileToCanvas(path, syncedFiles)
-        syncedFiles[path] = generateFileTSX(path, parsed.components, parsed.wires)
+        const parsed = getCanvasStateForFile(path, syncedFiles)
+        const generated = generateFileTSX(path, parsed.components, parsed.wires)
+        syncedFiles[path] = generated
+        const withSnapshot = writePersistedCanvasGraphState(syncedFiles, path, parsed.components, parsed.wires)
+        Object.assign(syncedFiles, withSnapshot)
       })
 
     const files = regenerateSubcircuitIndex(syncedFiles)
@@ -3813,11 +3920,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, targetFilePath, nextOpenFilePaths)
     const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, nextFsMap)
+    // Keep imported TSX as-is to preserve original schematic flow.
+    // Internal graph becomes source-of-truth via sidecar snapshot.
     const syncedFsMap = isCanvasEditableFilePath(normalizedFiles.activeFilePath)
-      ? regenerateSubcircuitIndex({
-          ...nextFsMap,
-          [normalizedFiles.activeFilePath]: generateFileTSX(normalizedFiles.activeFilePath, parsed.components, parsed.wires)
-        })
+      ? writePersistedCanvasGraphState(nextFsMap, normalizedFiles.activeFilePath, parsed.components, parsed.wires)
       : nextFsMap
     const nextWorkspaces = {
       ...state.workspaces,
@@ -3917,12 +4023,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       || importedProject.entryFiles[0]
       || state.activeFilePath
     const normalizedFiles = normalizeWorkspaceFileSelection(nextFsMap, preferredActivePath, nextOpenFilePaths)
-    const syncedFsMapSeed = { ...nextFsMap }
+    let syncedFsMapSeed = { ...nextFsMap }
     Object.keys(syncedFsMapSeed)
       .filter(path => isCanvasEditableFilePath(path))
       .forEach((path) => {
-        const parsedFile = parseFileToCanvas(path, syncedFsMapSeed)
-        syncedFsMapSeed[path] = generateFileTSX(path, parsedFile.components, parsedFile.wires)
+        const parsedFile = getCanvasStateForFile(path, syncedFsMapSeed)
+        syncedFsMapSeed = writePersistedCanvasGraphState(syncedFsMapSeed, path, parsedFile.components, parsedFile.wires)
       })
     const syncedFsMap = regenerateSubcircuitIndex(syncedFsMapSeed)
     const parsed = getCanvasStateForFile(normalizedFiles.activeFilePath, syncedFsMap)
@@ -4317,11 +4423,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const nextWorkspaces = { ...state.workspaces, [id]: newWs }
     // Switch to the new workspace
     const parsed = getCanvasStateForFile(SCHEMATIC_MAIN_PATH, newWs.fsMap)
-    saveWorkspacesToStorage(nextWorkspaces, id)
+    const fsMapWithSnapshot = writePersistedCanvasGraphState(newWs.fsMap, SCHEMATIC_MAIN_PATH, parsed.components, parsed.wires)
+    const workspaceWithSnapshot: WorkspaceData = {
+      ...newWs,
+      fsMap: fsMapWithSnapshot
+    }
+    const nextWorkspacesWithSnapshot = { ...state.workspaces, [id]: workspaceWithSnapshot }
+    saveWorkspacesToStorage(nextWorkspacesWithSnapshot, id)
     set({
-      workspaces: nextWorkspaces,
+      workspaces: nextWorkspacesWithSnapshot,
       activeWorkspaceId: id,
-      fsMap: newWs.fsMap,
+      fsMap: fsMapWithSnapshot,
       activeFilePath: SCHEMATIC_MAIN_PATH,
       openFilePaths: [SCHEMATIC_MAIN_PATH],
       placedComponents: parsed.components,
@@ -4360,16 +4472,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const normalizedTarget = normalizeWorkspaceData(target)
 
     const parsed = getCanvasStateForFile(normalizedTarget.activeFilePath, normalizedTarget.fsMap)
+    const targetFsMapWithSnapshot = isCanvasEditableFilePath(normalizedTarget.activeFilePath)
+      ? writePersistedCanvasGraphState(normalizedTarget.fsMap, normalizedTarget.activeFilePath, parsed.components, parsed.wires)
+      : normalizedTarget.fsMap
     const nextWorkspaces = {
       ...updatedWorkspaces,
       [state.activeWorkspaceId]: normalizedCurrent,
-      [id]: normalizedTarget
+      [id]: {
+        ...normalizedTarget,
+        fsMap: targetFsMapWithSnapshot
+      }
     }
     saveWorkspacesToStorage(nextWorkspaces, id)
     set({
       workspaces: nextWorkspaces,
       activeWorkspaceId: id,
-      fsMap: normalizedTarget.fsMap,
+      fsMap: targetFsMapWithSnapshot,
       activeFilePath: normalizedTarget.activeFilePath,
       openFilePaths: normalizedTarget.openFilePaths,
       placedComponents: parsed.components,
@@ -4425,11 +4543,21 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       const state = get()
       const nextWorkspaces = { ...state.workspaces, [id]: newWs }
       const parsed = getCanvasStateForFile(newWs.activeFilePath, newWs.fsMap)
-      saveWorkspacesToStorage(nextWorkspaces, id)
+      const fsMapWithSnapshot = isCanvasEditableFilePath(newWs.activeFilePath)
+        ? writePersistedCanvasGraphState(newWs.fsMap, newWs.activeFilePath, parsed.components, parsed.wires)
+        : newWs.fsMap
+      const nextWorkspacesWithSnapshot = {
+        ...state.workspaces,
+        [id]: {
+          ...newWs,
+          fsMap: fsMapWithSnapshot
+        }
+      }
+      saveWorkspacesToStorage(nextWorkspacesWithSnapshot, id)
       set({
-        workspaces: nextWorkspaces,
+        workspaces: nextWorkspacesWithSnapshot,
         activeWorkspaceId: id,
-        fsMap: newWs.fsMap,
+        fsMap: fsMapWithSnapshot,
         activeFilePath: newWs.activeFilePath,
         openFilePaths: newWs.openFilePaths,
         placedComponents: parsed.components,
@@ -4482,13 +4610,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         activeFilePath: SCHEMATIC_MAIN_PATH,
         openFilePaths: [SCHEMATIC_MAIN_PATH]
       })
-      const nextWorkspaces = { ...state.workspaces, [id]: newWs }
-      const parsed = parseFileToCanvas(newWs.activeFilePath, newWs.fsMap)
+      const parsed = getCanvasStateForFile(newWs.activeFilePath, newWs.fsMap)
+      const fsMapWithSnapshot = isCanvasEditableFilePath(newWs.activeFilePath)
+        ? writePersistedCanvasGraphState(newWs.fsMap, newWs.activeFilePath, parsed.components, parsed.wires)
+        : newWs.fsMap
+      const nextWorkspaces = {
+        ...state.workspaces,
+        [id]: {
+          ...newWs,
+          fsMap: fsMapWithSnapshot
+        }
+      }
       saveWorkspacesToStorage(nextWorkspaces, id)
       set({
         workspaces: nextWorkspaces,
         activeWorkspaceId: id,
-        fsMap: newWs.fsMap,
+        fsMap: fsMapWithSnapshot,
         activeFilePath: newWs.activeFilePath,
         openFilePaths: newWs.openFilePaths,
         placedComponents: parsed.components,
