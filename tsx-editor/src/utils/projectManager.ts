@@ -524,28 +524,219 @@ export const buildImportedProjectState = (fsMap: FSMap): ImportedProjectState =>
   }
 }
 
+const toFiniteNumber = (value: unknown, fallback = 0): number => {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
+}
+
+const shapeBounds = (shape: Record<string, any>): { minX: number; minY: number; maxX: number; maxY: number } | null => {
+  if (shape.kind === 'schematicline') {
+    const x1 = toFiniteNumber(shape.x1)
+    const y1 = toFiniteNumber(shape.y1)
+    const x2 = toFiniteNumber(shape.x2)
+    const y2 = toFiniteNumber(shape.y2)
+    return {
+      minX: Math.min(x1, x2),
+      minY: Math.min(y1, y2),
+      maxX: Math.max(x1, x2),
+      maxY: Math.max(y1, y2)
+    }
+  }
+
+  if (shape.kind === 'schematicrect') {
+    const x = toFiniteNumber(shape.schX)
+    const y = toFiniteNumber(shape.schY)
+    const width = Math.abs(toFiniteNumber(shape.width))
+    const height = Math.abs(toFiniteNumber(shape.height))
+    return {
+      minX: x,
+      minY: y,
+      maxX: x + width,
+      maxY: y + height
+    }
+  }
+
+  if (shape.kind === 'schematiccircle' || shape.kind === 'schematicarc') {
+    const centerX = toFiniteNumber(shape.center?.x)
+    const centerY = toFiniteNumber(shape.center?.y)
+    const radius = Math.abs(toFiniteNumber(shape.radius))
+    return {
+      minX: centerX - radius,
+      minY: centerY - radius,
+      maxX: centerX + radius,
+      maxY: centerY + radius
+    }
+  }
+
+  if (shape.kind === 'schematictext') {
+    const x = toFiniteNumber(shape.schX)
+    const y = toFiniteNumber(shape.schY)
+    const textWidth = Math.max(1, String(shape.text || '').length) * 6
+    return {
+      minX: x,
+      minY: y - 8,
+      maxX: x + textWidth,
+      maxY: y + 2
+    }
+  }
+
+  return null
+}
+
+const isNonDegenerateShape = (shape: Record<string, any>): boolean => {
+  if (shape.kind === 'schematicline') {
+    const x1 = toFiniteNumber(shape.x1)
+    const y1 = toFiniteNumber(shape.y1)
+    const x2 = toFiniteNumber(shape.x2)
+    const y2 = toFiniteNumber(shape.y2)
+    return x1 !== x2 || y1 !== y2
+  }
+
+  if (shape.kind === 'schematicrect') {
+    return Math.abs(toFiniteNumber(shape.width)) > 0 && Math.abs(toFiniteNumber(shape.height)) > 0
+  }
+
+  if (shape.kind === 'schematiccircle') {
+    return Math.abs(toFiniteNumber(shape.radius)) > 0
+  }
+
+  if (shape.kind === 'schematicarc') {
+    const radius = Math.abs(toFiniteNumber(shape.radius))
+    const start = toFiniteNumber(shape.startAngleDegrees)
+    const end = toFiniteNumber(shape.endAngleDegrees)
+    const delta = Math.abs(((end - start) % 360 + 360) % 360)
+    return radius > 0 && delta > 0
+  }
+
+  if (shape.kind === 'schematictext') {
+    return String(shape.text || '').trim().length > 0
+  }
+
+  return false
+}
+
+const normalizeSymbolGeometry = (
+  rawShapes: Array<Record<string, any>>,
+  rawPorts: Array<{ name: string; x: number; y: number }>
+): {
+  width: number
+  height: number
+  origin: { x: number; y: number }
+  shapes: Array<Record<string, any>>
+  ports: Array<{ name: string; x: number; y: number }>
+} => {
+  const shapes = rawShapes.filter(isNonDegenerateShape)
+  const bounds: Array<{ minX: number; minY: number; maxX: number; maxY: number }> = []
+
+  shapes.forEach((shape) => {
+    const bound = shapeBounds(shape)
+    if (bound) bounds.push(bound)
+  })
+
+  rawPorts.forEach((port) => {
+    const x = toFiniteNumber(port.x)
+    const y = toFiniteNumber(port.y)
+    bounds.push({ minX: x, minY: y, maxX: x, maxY: y })
+  })
+
+  const minX = bounds.length > 0 ? Math.min(...bounds.map(bound => bound.minX)) : 0
+  const minY = bounds.length > 0 ? Math.min(...bounds.map(bound => bound.minY)) : 0
+  const maxX = bounds.length > 0 ? Math.max(...bounds.map(bound => bound.maxX)) : 120
+  const maxY = bounds.length > 0 ? Math.max(...bounds.map(bound => bound.maxY)) : 80
+
+  const normalizeX = (value: unknown) => toFiniteNumber(value) - minX
+  const normalizeY = (value: unknown) => toFiniteNumber(value) - minY
+
+  const normalizedShapes = shapes.map((shape) => {
+    if (shape.kind === 'schematicline') {
+      return {
+        ...shape,
+        x1: normalizeX(shape.x1),
+        y1: normalizeY(shape.y1),
+        x2: normalizeX(shape.x2),
+        y2: normalizeY(shape.y2)
+      }
+    }
+
+    if (shape.kind === 'schematicrect') {
+      return {
+        ...shape,
+        schX: normalizeX(shape.schX),
+        schY: normalizeY(shape.schY),
+        width: Math.abs(toFiniteNumber(shape.width)),
+        height: Math.abs(toFiniteNumber(shape.height))
+      }
+    }
+
+    if (shape.kind === 'schematiccircle' || shape.kind === 'schematicarc') {
+      return {
+        ...shape,
+        center: {
+          x: normalizeX(shape.center?.x),
+          y: normalizeY(shape.center?.y)
+        },
+        radius: Math.abs(toFiniteNumber(shape.radius))
+      }
+    }
+
+    if (shape.kind === 'schematictext') {
+      return {
+        ...shape,
+        schX: normalizeX(shape.schX),
+        schY: normalizeY(shape.schY),
+        text: String(shape.text || '')
+      }
+    }
+
+    return { ...shape }
+  })
+
+  const normalizedPorts = rawPorts
+    .filter(port => String(port.name || '').trim().length > 0)
+    .map(port => ({
+      name: String(port.name || '').trim(),
+      x: normalizeX(port.x),
+      y: normalizeY(port.y)
+    }))
+
+  return {
+    width: Math.max(20, maxX - minX),
+    height: Math.max(20, maxY - minY),
+    origin: { x: minX, y: minY },
+    shapes: normalizedShapes,
+    ports: normalizedPorts
+  }
+}
+
 export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
   const symbolComponents: SymbolDefinition[] = []
 
   Object.entries(fsMap).forEach(([path, content]) => {
     if (!path.endsWith('.tsx')) return
-    if (detectFileKind(content) !== 'symbol-component') return
+    const detectedKind = inferDetectedFileKind(path, content)
+    if (detectedKind !== 'symbol-component') return
 
     const name = extractSymbolComponentName(path, content)
     const parsedDoc = importSymbolTsxToDocument(content, name)
-    const ports = parsedDoc.ports.length > 0
-      ? parsedDoc.ports.map(port => ({ name: port.name, x: Number(port.schX || 0), y: Number(port.schY || 0) }))
+    const rawPorts = parsedDoc.ports.length > 0
+      ? parsedDoc.ports.map(port => ({ name: port.name, x: toFiniteNumber(port.schX), y: toFiniteNumber(port.schY) }))
       : extractPortsFromSymbolComponentContent(content).map(portName => ({ name: portName, x: 0, y: 0 }))
+
+    const normalized = normalizeSymbolGeometry(
+      parsedDoc.shapes.map(shape => ({ ...shape })) as Array<Record<string, any>>,
+      rawPorts
+    )
 
     symbolComponents.push({
       id: name,
       name,
       filePath: path,
-      ports,
+      ports: normalized.ports,
       geometry: {
-        width: Number(parsedDoc.width || 120),
-        height: Number(parsedDoc.height || 80),
-        shapes: parsedDoc.shapes.map(shape => ({ ...shape }))
+        width: normalized.width,
+        height: normalized.height,
+        origin: normalized.origin,
+        shapes: normalized.shapes
       },
       drawing: { type: 'jsx', content }
     })

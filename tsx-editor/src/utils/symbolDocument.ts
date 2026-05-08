@@ -65,6 +65,31 @@ const escapeStringLiteral = (value: string): string => {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
+const isRenderableSymbolShape = (shape: SymbolShape): boolean => {
+  if (shape.kind === 'schematicline') {
+    return shape.x1 !== shape.x2 || shape.y1 !== shape.y2
+  }
+
+  if (shape.kind === 'schematicrect') {
+    return Math.abs(shape.width) > 0 && Math.abs(shape.height) > 0
+  }
+
+  if (shape.kind === 'schematiccircle') {
+    return Math.abs(shape.radius) > 0
+  }
+
+  if (shape.kind === 'schematicarc') {
+    const delta = Math.abs(((shape.endAngleDegrees - shape.startAngleDegrees) % 360 + 360) % 360)
+    return Math.abs(shape.radius) > 0 && delta > 0
+  }
+
+  if (shape.kind === 'schematictext') {
+    return shape.text.trim().length > 0
+  }
+
+  return false
+}
+
 const symbolShapeToTsx = (shape: SymbolShape): string => {
   if (shape.kind === 'schematicline') {
     return `<schematicline x1={${toTsxNumber(shape.x1)}} y1={${toTsxNumber(shape.y1)}} x2={${toTsxNumber(shape.x2)}} y2={${toTsxNumber(shape.y2)}} />`
@@ -98,7 +123,7 @@ const toSafeComponentIdentifier = (raw: string): string => {
 export const generateSymbolTsx = (document: SymbolDocument): string => {
   const fnName = toSafeComponentIdentifier(document.name || 'MySymbol')
   const rows = [
-    ...document.shapes.map(symbolShapeToTsx),
+    ...document.shapes.filter(isRenderableSymbolShape).map(symbolShapeToTsx),
     ...document.ports.map(symbolPortToTsx)
   ]
 

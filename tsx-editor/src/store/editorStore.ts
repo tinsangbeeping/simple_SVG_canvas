@@ -16,6 +16,7 @@ import {
   buildImportedProjectState,
   buildSubcircuitRegistry,
   buildSymbolComponentRegistry,
+  extractAllSymbols,
   extractPortsFromSubcircuitContent,
   resolveProjectPath,
   validateImports
@@ -1431,6 +1432,9 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   const isSchematicFile = isSchematicFilePath(filePath)
   const isSubcircuitFile = filePath.startsWith('subcircuits/')
   const symbolNames = getWorkspaceSymbolNames(fsMap)
+  const symbolDefinitions = extractAllSymbols(fsMap)
+  const symbolDefinitionsByName = new Map(symbolDefinitions.map(symbol => [symbol.name, symbol]))
+  const symbolDefinitionsByPath = new Map(symbolDefinitions.map(symbol => [symbol.filePath, symbol]))
   const subcircuitRegistry = buildSubcircuitRegistry(fsMap)
   const symbolComponentRegistry = buildSymbolComponentRegistry(fsMap)
   const subcircuitRegistryByPath = new Map(Object.values(subcircuitRegistry).map(info => [info.filePath, info]))
@@ -1619,12 +1623,16 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     const isKnownPart = !isSheetReference && !isPublicPort && !!getCatalogItem(effectiveCatalogId)
     const id = `comp-${filePath}-${name}-${components.length}`
 
+    const importedComponentPath = importedComponentPaths.get(tagName)
     const isSymbolReference = symbolNames.has(tagName)
+      || (!!importedComponentPath && symbolDefinitionsByPath.has(importedComponentPath))
     const subcircuitDefinition = subcircuitRegistry[tagName]
     const symbolComponentDefinition = symbolComponentRegistry[tagName]
-    const importedComponentPath = importedComponentPaths.get(tagName)
     const importedSubcircuitDefinition = importedComponentPath ? subcircuitRegistryByPath.get(importedComponentPath) : undefined
     const importedSymbolComponentDefinition = importedComponentPath ? symbolComponentRegistryByPath.get(importedComponentPath) : undefined
+    const resolvedSymbolDefinition =
+      symbolDefinitionsByName.get(tagName)
+      || (importedComponentPath ? symbolDefinitionsByPath.get(importedComponentPath) : undefined)
 
     if (isSheetReference) {
       const rawSheetSrc = String(props.src || '')
@@ -1638,8 +1646,21 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       props.publicPortName = name
     } else if (isSymbolReference) {
       props.symbolName = tagName
-      props.ports = symbolComponentDefinition?.ports || importedSymbolComponentDefinition?.ports || []
-      props.subcircuitPath = importedComponentPath || symbolComponentDefinition?.filePath || `symbols/${tagName}.tsx`
+      props.ports = resolvedSymbolDefinition?.ports.map(port => port.name)
+        || symbolComponentDefinition?.ports
+        || importedSymbolComponentDefinition?.ports
+        || []
+      props.symbolPorts = resolvedSymbolDefinition?.ports.map(port => ({
+        name: port.name,
+        schX: Number(port.x || 0),
+        schY: Number(port.y || 0)
+      })) || []
+      props.symbolShapes = resolvedSymbolDefinition?.geometry?.shapes?.map(shape => ({ ...shape })) || []
+      props.symbolWidth = Number(resolvedSymbolDefinition?.geometry?.width || props.symbolWidth || 120)
+      props.symbolHeight = Number(resolvedSymbolDefinition?.geometry?.height || props.symbolHeight || 80)
+      props.symbolOriginX = Number(resolvedSymbolDefinition?.geometry?.origin?.x || 0)
+      props.symbolOriginY = Number(resolvedSymbolDefinition?.geometry?.origin?.y || 0)
+      props.subcircuitPath = importedComponentPath || resolvedSymbolDefinition?.filePath || symbolComponentDefinition?.filePath || `symbols/${tagName}.tsx`
     } else if (!isKnownPart) {
       const ports = subcircuitDefinition?.ports
         || symbolComponentDefinition?.ports
@@ -2087,6 +2108,11 @@ const getSelectablePinsForComponent = (component: PlacedComponent): string[] => 
   }
 
   if (component.catalogId === 'symbol-instance') {
+    const fromGeometry = Array.isArray(component.props.symbolPorts)
+      ? (component.props.symbolPorts as Array<{ name?: string }>).map(port => String(port.name || '').trim()).filter(Boolean)
+      : []
+    if (fromGeometry.length > 0) return fromGeometry
+
     const ports = ((component.props.ports as string[] | undefined) || []).map(String).filter(Boolean)
     return ports
   }
@@ -2228,6 +2254,8 @@ const toAttrList = (props: Record<string, any>): string[] => {
       'symbolShapes',
       'symbolWidth',
       'symbolHeight',
+      'symbolOriginX',
+      'symbolOriginY',
       'netName',
       'netId',
       'netAnchorKind',
@@ -2421,6 +2449,7 @@ const createGraphExportArtifacts = (
     const fromRef = traceEndpointRef(fromComponent, wire.from.pinName)
     const toRef = traceEndpointRef(toComponent, wire.to.pinName)
     if (!fromRef || !toRef) return
+    if (fromRef === toRef) return
 
     // Avoid exporting abstract net-to-net edges that explode into unreadable netlist-style wiring.
     if (fromRef.startsWith('net.') && toRef.startsWith('net.')) return
@@ -2437,6 +2466,7 @@ const createGraphExportArtifacts = (
   const labelsByNet = new Map<string, Array<{ x: number; y: number; explicit: boolean }>>()
   components
     .filter(component => component.catalogId === 'netlabel')
+    .filter(component => component.props.internalHelper !== true)
     .forEach((component) => {
       const rawNet = String(component.props.net || component.props.netName || component.name || '').trim()
       if (!rawNet) return
@@ -2451,8 +2481,13 @@ const createGraphExportArtifacts = (
 
   labelsByNet.forEach((labels, net) => {
     const explicitLabels = labels.filter(label => label.explicit)
-    const source = explicitLabels.length > 0 ? explicitLabels : labels
-    if (source.length > 0) {
+    if (explicitLabels.length > 0) {
+      exportGraph.nodes.push({ kind: 'netlabel', net })
+      return
+    }
+
+    // If there are only default/unpositioned labels, emit at most one explicit netlabel.
+    if (labels.length > 0) {
       exportGraph.nodes.push({ kind: 'netlabel', net })
     }
   })
@@ -2501,12 +2536,16 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
         }
       })
 
-    const symbolImportSet = new Set(
-      components
-        .filter(c => c.catalogId === 'symbol-instance')
-        .map(c => c.props.symbolName as string)
-        .filter(Boolean)
-    )
+    const symbolImportMap = new Map<string, string>()
+    components
+      .filter(c => c.catalogId === 'symbol-instance')
+      .forEach((component) => {
+        const symbolName = String(component.props.symbolName || component.name || '').trim()
+        const symbolPath = String(component.props.subcircuitPath || `symbols/${symbolName}.tsx`).trim()
+        if (symbolName && symbolPath) {
+          symbolImportMap.set(symbolName, symbolPath)
+        }
+      })
 
     const subImports = [...subImportMap.entries()]
       .filter(([, importFilePath]) => !importFilePath.startsWith('symbols/'))
@@ -2516,14 +2555,9 @@ const generateFileTSX = (filePath: string, components: PlacedComponent[], wires:
       .filter(([, importFilePath]) => importFilePath.startsWith('symbols/'))
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([name, importFilePath]) => `import ${name} from "${getRelativeImportPath(filePath, importFilePath)}"`)
-    const symbolImports = [...symbolImportSet]
-      .sort()
-      .map(name => {
-        const importPrefix = filePath.startsWith('schematics/') ? '../symbols' : './'
-        return importPrefix === './'
-          ? `import { ${name} } from "./${name}"`
-          : `import { ${name} } from "${importPrefix}/${name}"`
-      })
+    const symbolImports = [...symbolImportMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([symbolName, symbolPath]) => `import ${symbolName} from "${getRelativeImportPath(filePath, symbolPath)}"`)
 
     const imports = [...subImports, ...symbolComponentImports, ...symbolImports].join('\n')
 

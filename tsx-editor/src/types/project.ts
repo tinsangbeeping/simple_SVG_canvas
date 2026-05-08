@@ -55,6 +55,10 @@ export interface SymbolDefinition {
   geometry?: {
     width: number
     height: number
+    origin: {
+      x: number
+      y: number
+    }
     shapes: Array<Record<string, any>>
   }
   drawing: {

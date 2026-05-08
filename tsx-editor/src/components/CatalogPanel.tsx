@@ -95,7 +95,12 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
     symbolName: string,
     symbolPath: string,
     ports: Array<{ name: string; x: number; y: number }>,
-    geometry?: { width: number; height: number; shapes: Array<Record<string, any>> }
+    geometry?: {
+      width: number
+      height: number
+      origin: { x: number; y: number }
+      shapes: Array<Record<string, any>>
+    }
   ) => {
     e.dataTransfer.setData('symbolComponentName', symbolName)
     e.dataTransfer.setData('symbolComponentPath', symbolPath)

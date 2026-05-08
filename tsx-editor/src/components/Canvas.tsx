@@ -148,6 +148,7 @@ export const Canvas: React.FC = () => {
   const getResolvedSymbolData = (component: PlacedComponent): {
     width: number
     height: number
+    origin: { x: number; y: number }
     ports: Array<{ name: string; schX: number; schY: number }>
     shapes: Array<any>
   } => {
@@ -156,7 +157,7 @@ export const Canvas: React.FC = () => {
     const resolved = symbolRegistryByName.get(symbolName) || symbolRegistryByName.get(symbolPath)
 
     const localPorts = Array.isArray(component.props.symbolPorts)
-      ? (component.props.symbolPorts as Array<{ name: string; schX: number; schY: number }>)
+      ? (component.props.symbolPorts as Array<{ name: string; schX?: number; schY?: number; x?: number; y?: number }>)
       : []
     const localShapes = Array.isArray(component.props.symbolShapes)
       ? (component.props.symbolShapes as Array<any>)
@@ -167,14 +168,28 @@ export const Canvas: React.FC = () => {
       schX: Number(port.x || 0),
       schY: Number(port.y || 0)
     }))
+    const normalizedLocalPorts = localPorts.map((port) => ({
+      name: String(port.name || ''),
+      schX: Number(port.schX ?? port.x ?? 0),
+      schY: Number(port.schY ?? port.y ?? 0)
+    }))
+
     const resolvedShapes = Array.isArray(resolved?.geometry?.shapes)
       ? resolved.geometry.shapes
       : []
 
+    const localOriginX = Number(component.props.symbolOriginX)
+    const localOriginY = Number(component.props.symbolOriginY)
+    const resolvedOrigin = resolved?.geometry?.origin
+
     return {
       width: Math.max(20, Number(component.props.symbolWidth || resolved?.geometry?.width || 120)),
       height: Math.max(20, Number(component.props.symbolHeight || resolved?.geometry?.height || 80)),
-      ports: localPorts.length > 0 ? localPorts : resolvedPorts,
+      origin: {
+        x: Number.isFinite(localOriginX) ? localOriginX : Number(resolvedOrigin?.x || 0),
+        y: Number.isFinite(localOriginY) ? localOriginY : Number(resolvedOrigin?.y || 0)
+      },
+      ports: normalizedLocalPorts.length > 0 ? normalizedLocalPorts : resolvedPorts,
       shapes: localShapes.length > 0 ? localShapes : resolvedShapes
     }
   }
@@ -569,13 +584,15 @@ export const Canvas: React.FC = () => {
           symbolPorts: Array.isArray(portGeometry)
             ? portGeometry.map((port: any) => ({
                 name: String(port.name || ''),
-                schX: Number(port.x || 0),
-                schY: Number(port.y || 0)
+                schX: Number(port.schX ?? port.x ?? 0),
+                schY: Number(port.schY ?? port.y ?? 0)
               }))
             : [],
           symbolShapes: geometry?.shapes || [],
           symbolWidth: Number(geometry?.width || 120),
           symbolHeight: Number(geometry?.height || 80),
+          symbolOriginX: Number(geometry?.origin?.x || 0),
+          symbolOriginY: Number(geometry?.origin?.y || 0),
           schX: x,
           schY: y
         },
@@ -1267,22 +1284,6 @@ export const Canvas: React.FC = () => {
                   </div>
                 )}
 
-                {isSymbolInstance && (
-                  <div style={{
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    fontSize: 12,
-                    color: '#26c6da',
-                    fontWeight: 600,
-                    pointerEvents: 'none',
-                    textAlign: 'center',
-                    whiteSpace: 'nowrap'
-                  }}>
-                    {component.props.symbolName}
-                  </div>
-                )}
 
                 {isNetPort && (
                   <div style={{

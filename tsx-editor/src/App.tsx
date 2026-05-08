@@ -267,7 +267,7 @@ function App() {
 
     setFSMap({
       ...fsMap,
-      [filePath]: `export function ${safeName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <symbol>\n      <line x1=\"-8\" y1=\"0\" x2=\"8\" y2=\"0\" stroke=\"black\" />\n    </symbol>\n  )\n}\n`
+      [filePath]: `export default function ${safeName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <chip\n      name={props.name}\n      schX={props.schX}\n      schY={props.schY}\n      footprint="none"\n      symbol={\n        <symbol>\n          <schematicline x1={0} y1={20} x2={40} y2={20} />\n          <port name="P1" direction="passive" schX={0} schY={20} />\n          <port name="P2" direction="passive" schX={40} schY={20} />\n        </symbol>\n      }\n    />\n  )\n}\n`
     })
     setActiveFilePath(filePath)
   }
