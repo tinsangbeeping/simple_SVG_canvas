@@ -373,32 +373,70 @@ export const Canvas: React.FC = () => {
       const resolved = getResolvedSymbolData(component)
       const symbolPorts = resolved.ports
       if (symbolPorts.length > 0) {
-        // Sort ports: left/right side ports by Y (top→bottom), top/bottom side ports by X (left→right).
-        // Ports with explicit `order` field are sorted within their side by order.
-        const sorted = [...symbolPorts]
+        const toFinite = (value: unknown, fallback: number) => {
+          const parsed = Number(value)
+          return Number.isFinite(parsed) ? parsed : fallback
+        }
+        const validSide = (side: unknown): 'left' | 'right' | 'top' | 'bottom' | undefined => {
+          if (side === 'left' || side === 'right' || side === 'top' || side === 'bottom') return side
+          return undefined
+        }
+        const sideRank = (side: 'left' | 'right' | 'top' | 'bottom' | undefined) => {
+          if (side === 'left') return 0
+          if (side === 'right') return 1
+          if (side === 'top') return 2
+          if (side === 'bottom') return 3
+          return 4
+        }
+
+        // Preserve actual Symbol Maker coordinates; side/order only controls per-side ordering.
+        const normalized = symbolPorts
           .filter(port => String(port.name || '').trim().length > 0)
-          .sort((a, b) => {
-            const sideA = a.side || 'left'
-            const sideB = b.side || 'left'
-            if (sideA !== sideB) return 0  // different sides: keep relative insertion order
-            const orderA = a.order !== undefined ? a.order : Number(a.schY || 0)
-            const orderB = b.order !== undefined ? b.order : Number(b.schY || 0)
-            return orderA - orderB
+          .map((port, index) => {
+            const side = validSide(port.side)
+            const rawX = Number(port.schX)
+            const rawY = Number(port.schY)
+            const x = Number.isFinite(rawX) ? rawX : NaN
+            const y = Number.isFinite(rawY) ? rawY : NaN
+            const rawOrder = Number((port as any).order)
+            const order = Number.isFinite(rawOrder) ? rawOrder : undefined
+            return {
+              name: String(port.name),
+              side,
+              x,
+              y,
+              order,
+              index
+            }
           })
 
-        return sorted.map(port => {
-          const side = port.side
-          const symWidth = resolved.width
-          const symHeight = resolved.height
-          let x = Number(port.schX || 0)
-          let y = Number(port.schY || 0)
-          // If a side is explicit, snap the connector point to that edge so wires
-          // enter/exit from the correct boundary.
-          if (side === 'left') x = 0
-          else if (side === 'right') x = symWidth
-          else if (side === 'top') y = 0
-          else if (side === 'bottom') y = symHeight
-          return { name: String(port.name), x, y }
+        const sorted = [...normalized].sort((a, b) => {
+          const sideDelta = sideRank(a.side) - sideRank(b.side)
+          if (sideDelta !== 0) return sideDelta
+
+          // Explicit order wins within the same side.
+          if (a.order !== undefined && b.order !== undefined && a.order !== b.order) {
+            return a.order - b.order
+          }
+
+          // Fallback to geometric ordering by side axis.
+          if (a.side === 'left' || a.side === 'right') {
+            if (Number.isFinite(a.y) && Number.isFinite(b.y) && a.y !== b.y) return a.y - b.y
+          } else if (a.side === 'top' || a.side === 'bottom') {
+            if (Number.isFinite(a.x) && Number.isFinite(b.x) && a.x !== b.x) return a.x - b.x
+          }
+
+          return a.index - b.index
+        })
+
+        return sorted.map((port) => {
+          const fallbackX = port.side === 'right' ? resolved.width : port.side === 'left' ? 0 : resolved.width / 2
+          const fallbackY = port.side === 'bottom' ? resolved.height : port.side === 'top' ? 0 : resolved.height / 2
+          return {
+            name: port.name,
+            x: toFinite(port.x, fallbackX),
+            y: toFinite(port.y, fallbackY)
+          }
         })
       }
 
