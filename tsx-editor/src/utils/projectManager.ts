@@ -12,6 +12,7 @@ import {
   SymbolDefinition
 } from '../types/project'
 import { detectFileKind, getFolderForDetectedFileKind, inferDetectedFileKind } from './fileClassification'
+import { importSymbolTsxToDocument } from './symbolDocument'
 
 export const DEFAULT_SYMBOLS_FOLDER = `
 export const ResistorSymbol = () => (
@@ -531,13 +532,21 @@ export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
     if (detectFileKind(content) !== 'symbol-component') return
 
     const name = extractSymbolComponentName(path, content)
-    const ports = extractPortsFromSymbolComponentContent(content).map(portName => ({ name: portName, x: 0, y: 0 }))
+    const parsedDoc = importSymbolTsxToDocument(content, name)
+    const ports = parsedDoc.ports.length > 0
+      ? parsedDoc.ports.map(port => ({ name: port.name, x: Number(port.schX || 0), y: Number(port.schY || 0) }))
+      : extractPortsFromSymbolComponentContent(content).map(portName => ({ name: portName, x: 0, y: 0 }))
 
     symbolComponents.push({
       id: name,
       name,
       filePath: path,
       ports,
+      geometry: {
+        width: Number(parsedDoc.width || 120),
+        height: Number(parsedDoc.height || 80),
+        shapes: parsedDoc.shapes.map(shape => ({ ...shape }))
+      },
       drawing: { type: 'jsx', content }
     })
   })

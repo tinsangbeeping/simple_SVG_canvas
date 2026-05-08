@@ -1,12 +1,103 @@
-import React, { useRef, useState, useEffect } from 'react'
+import React, { useRef, useState, useEffect, useMemo } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import { PlacedComponent } from '../types/catalog'
 import { getCatalogItem } from '../catalog'
 import { SchematicSymbol } from './SchematicSymbol'
 import { getPinConfig } from '../types/schematic'
-import { extractAllSubcircuits } from '../utils/projectManager'
+import { extractAllSubcircuits, extractAllSymbols } from '../utils/projectManager'
 
 export const Canvas: React.FC = () => {
+    const renderSymbolGeometry = (component: PlacedComponent, selected: boolean) => {
+      const resolved = getResolvedSymbolData(component)
+      const symbolShapes = resolved.shapes
+      const symbolWidth = resolved.width
+      const symbolHeight = resolved.height
+      const strokeColor = selected ? '#007acc' : '#4CAF50'
+
+      if (symbolShapes.length === 0) {
+        return (
+          <div style={{
+            width: symbolWidth,
+            height: symbolHeight,
+            border: `1px dashed ${strokeColor}`,
+            borderRadius: 4,
+            boxSizing: 'border-box'
+          }} />
+        )
+      }
+
+      return (
+        <svg width={symbolWidth} height={symbolHeight} viewBox={`0 0 ${symbolWidth} ${symbolHeight}`} style={{ overflow: 'visible' }}>
+          {symbolShapes.map((shape: any, index: number) => {
+            const key = String(shape.id || `shape-${index}`)
+            if (shape.kind === 'schematicline') {
+              return (
+                <line
+                  key={key}
+                  x1={Number(shape.x1 || 0)}
+                  y1={Number(shape.y1 || 0)}
+                  x2={Number(shape.x2 || 0)}
+                  y2={Number(shape.y2 || 0)}
+                  stroke={strokeColor}
+                  strokeWidth={2}
+                />
+              )
+            }
+            if (shape.kind === 'schematicrect') {
+              return (
+                <rect
+                  key={key}
+                  x={Number(shape.schX || 0)}
+                  y={Number(shape.schY || 0)}
+                  width={Number(shape.width || 1)}
+                  height={Number(shape.height || 1)}
+                  stroke={strokeColor}
+                  strokeWidth={2}
+                  fill="none"
+                />
+              )
+            }
+            if (shape.kind === 'schematiccircle') {
+              return (
+                <circle
+                  key={key}
+                  cx={Number(shape.center?.x || 0)}
+                  cy={Number(shape.center?.y || 0)}
+                  r={Math.max(1, Number(shape.radius || 1))}
+                  stroke={strokeColor}
+                  strokeWidth={2}
+                  fill="none"
+                />
+              )
+            }
+            if (shape.kind === 'schematicarc') {
+              const cx = Number(shape.center?.x || 0)
+              const cy = Number(shape.center?.y || 0)
+              const radius = Math.max(1, Number(shape.radius || 1))
+              const start = Number(shape.startAngleDegrees || 0) * Math.PI / 180
+              const end = Number(shape.endAngleDegrees || 180) * Math.PI / 180
+              const x1 = cx + radius * Math.cos(start)
+              const y1 = cy + radius * Math.sin(start)
+              const x2 = cx + radius * Math.cos(end)
+              const y2 = cy + radius * Math.sin(end)
+              const delta = ((Number(shape.endAngleDegrees || 180) - Number(shape.startAngleDegrees || 0)) % 360 + 360) % 360
+              const largeArc = delta > 180 ? 1 : 0
+              const d = `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2}`
+              return <path key={key} d={d} stroke={strokeColor} strokeWidth={2} fill="none" />
+            }
+            if (shape.kind === 'schematictext') {
+              return (
+                <text key={key} x={Number(shape.schX || 0)} y={Number(shape.schY || 0)} fill={strokeColor} fontSize={10}>
+                  {String(shape.text || '')}
+                </text>
+              )
+            }
+            return null
+          })}
+        </svg>
+      )
+    }
+
   const SNAP_STEP = 2
   const CANVAS_HALF_EXTENT = 100000
   const CANVAS_EXTENT = CANVAS_HALF_EXTENT * 2
@@ -41,8 +132,52 @@ export const Canvas: React.FC = () => {
     setCursorNearPin,
     openSubcircuitEditor,
     insertSubcircuitInstance,
-    setActiveFilePath
+    setActiveFilePath,
+    fsMap
   } = useEditorStore()
+
+  const symbolRegistryByName = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof extractAllSymbols>[number]>()
+    extractAllSymbols(fsMap).forEach((symbol) => {
+      map.set(symbol.name, symbol)
+      map.set(symbol.filePath, symbol)
+    })
+    return map
+  }, [fsMap])
+
+  const getResolvedSymbolData = (component: PlacedComponent): {
+    width: number
+    height: number
+    ports: Array<{ name: string; schX: number; schY: number }>
+    shapes: Array<any>
+  } => {
+    const symbolName = String(component.props.symbolName || '').trim()
+    const symbolPath = String(component.props.subcircuitPath || '').trim()
+    const resolved = symbolRegistryByName.get(symbolName) || symbolRegistryByName.get(symbolPath)
+
+    const localPorts = Array.isArray(component.props.symbolPorts)
+      ? (component.props.symbolPorts as Array<{ name: string; schX: number; schY: number }>)
+      : []
+    const localShapes = Array.isArray(component.props.symbolShapes)
+      ? (component.props.symbolShapes as Array<any>)
+      : []
+
+    const resolvedPorts = (resolved?.ports || []).map(port => ({
+      name: String(port.name || ''),
+      schX: Number(port.x || 0),
+      schY: Number(port.y || 0)
+    }))
+    const resolvedShapes = Array.isArray(resolved?.geometry?.shapes)
+      ? resolved.geometry.shapes
+      : []
+
+    return {
+      width: Math.max(20, Number(component.props.symbolWidth || resolved?.geometry?.width || 120)),
+      height: Math.max(20, Number(component.props.symbolHeight || resolved?.geometry?.height || 80)),
+      ports: localPorts.length > 0 ? localPorts : resolvedPorts,
+      shapes: localShapes.length > 0 ? localShapes : resolvedShapes
+    }
+  }
 
   const normalizeRotation = (rotation: any): number => {
     const raw = String(rotation || '0deg').trim()
@@ -85,7 +220,11 @@ export const Canvas: React.FC = () => {
       return { width: 150, height: Math.max(52, 34 + rows * 18) }
     }
     if (component.catalogId === 'symbol-instance') {
-      return { width: 120, height: 56 }
+      const resolved = getResolvedSymbolData(component)
+      return {
+        width: resolved.width,
+        height: resolved.height
+      }
     }
     if (component.catalogId === 'customchip') {
       const legacyCount = Math.max(2, Number(component.props.pinCount || 8))
@@ -134,8 +273,20 @@ export const Canvas: React.FC = () => {
     }
 
     if (component.catalogId === 'symbol-instance') {
+      const resolved = getResolvedSymbolData(component)
+      const symbolPorts = resolved.ports
+      if (symbolPorts.length > 0) {
+        return symbolPorts
+          .filter(port => String(port.name || '').trim().length > 0)
+          .map(port => ({
+            name: String(port.name),
+            x: Number(port.schX || 0),
+            y: Number(port.schY || 0)
+          }))
+      }
+
       const ports = ((component.props.ports as string[] | undefined) || []).map(String)
-      const width = 120
+      const width = resolved.width
       if (ports.length === 0) return []
       return ports.map((portName, index) => {
         const row = Math.floor(index / 2)
@@ -348,6 +499,8 @@ export const Canvas: React.FC = () => {
     const symbolComponentName = e.dataTransfer.getData('symbolComponentName')
     const symbolComponentPath = e.dataTransfer.getData('symbolComponentPath')
     const symbolComponentPorts = e.dataTransfer.getData('symbolComponentPorts')
+    const symbolComponentPortGeometry = e.dataTransfer.getData('symbolComponentPortGeometry')
+    const symbolComponentGeometry = e.dataTransfer.getData('symbolComponentGeometry')
     
     if (!canvasRef.current) return
 
@@ -402,15 +555,27 @@ export const Canvas: React.FC = () => {
       }
 
       const ports = symbolComponentPorts ? JSON.parse(symbolComponentPorts) : []
+      const portGeometry = symbolComponentPortGeometry ? JSON.parse(symbolComponentPortGeometry) : []
+      const geometry = symbolComponentGeometry ? JSON.parse(symbolComponentGeometry) : null
 
       addPlacedComponent({
         id: `symc-${Date.now()}-${Math.random()}`,
-        catalogId: 'subcircuit-instance',
+        catalogId: 'symbol-instance',
         name: uniqueName,
         props: {
-          subcircuitName: symbolComponentName,
+          symbolName: symbolComponentName,
           subcircuitPath: symbolComponentPath || `symbols/${symbolComponentName}.tsx`,
           ports,
+          symbolPorts: Array.isArray(portGeometry)
+            ? portGeometry.map((port: any) => ({
+                name: String(port.name || ''),
+                schX: Number(port.x || 0),
+                schY: Number(port.y || 0)
+              }))
+            : [],
+          symbolShapes: geometry?.shapes || [],
+          symbolWidth: Number(geometry?.width || 120),
+          symbolHeight: Number(geometry?.height || 80),
           schX: x,
           schY: y
         },
@@ -653,112 +818,83 @@ export const Canvas: React.FC = () => {
     }
   }
 
-  const endpointKey = (componentId: string, pinName: string) => `${componentId}::${pinName}`
-  const endpointPosition = (key: string): { x: number; y: number } | null => {
-    const [componentId, pinName] = key.split('::')
-    const component = placedComponents.find(c => c.id === componentId)
-    if (!component) return null
-    return getPinPositionForComponent(component, pinName)
-  }
+  const toPointKey = (x: number, y: number) => `${Math.round(x * 100) / 100},${Math.round(y * 100) / 100}`
 
-  const wirePathById = new Map<string, string>()
-  const junctionDotByWireId = new Map<string, Array<{ x: number; y: number; key: string }>>()
+  const sanitizeWirePoints = (
+    fromPos: { x: number; y: number },
+    toPos: { x: number; y: number },
+    routePoints?: Array<{ x: number; y: number }>
+  ): Array<{ x: number; y: number }> => {
+    const source = Array.isArray(routePoints) && routePoints.length >= 2
+      ? routePoints.map(point => ({ x: Number(point.x), y: Number(point.y) }))
+      : [
+        { x: fromPos.x, y: fromPos.y },
+        { x: (fromPos.x + toPos.x) / 2, y: fromPos.y },
+        { x: (fromPos.x + toPos.x) / 2, y: toPos.y },
+        { x: toPos.x, y: toPos.y }
+      ]
 
-  const endpointDegree = new Map<string, number>()
-  wires.forEach((wire) => {
-    const fromKey = endpointKey(wire.from.componentId, wire.from.pinName)
-    const toKey = endpointKey(wire.to.componentId, wire.to.pinName)
-    endpointDegree.set(fromKey, (endpointDegree.get(fromKey) || 0) + 1)
-    endpointDegree.set(toKey, (endpointDegree.get(toKey) || 0) + 1)
-  })
+    const normalized = source.filter(point => Number.isFinite(point.x) && Number.isFinite(point.y))
+    if (normalized.length === 0) return [fromPos, toPos]
 
-  const parent = new Map<string, string>()
-  const find = (value: string): string => {
-    const current = parent.get(value) || value
-    if (current === value) {
-      parent.set(value, value)
-      return value
-    }
-    const root = find(current)
-    parent.set(value, root)
-    return root
-  }
-  const union = (a: string, b: string) => {
-    const rootA = find(a)
-    const rootB = find(b)
-    if (rootA === rootB) return
-    if (rootA < rootB) {
-      parent.set(rootB, rootA)
-    } else {
-      parent.set(rootA, rootB)
-    }
-  }
+    // Enforce endpoint termination: no segment may continue beyond target pins.
+    normalized[0] = { x: fromPos.x, y: fromPos.y }
+    normalized[normalized.length - 1] = { x: toPos.x, y: toPos.y }
 
-  wires.forEach((wire) => {
-    const fromKey = endpointKey(wire.from.componentId, wire.from.pinName)
-    const toKey = endpointKey(wire.to.componentId, wire.to.pinName)
-    if (!parent.has(fromKey)) parent.set(fromKey, fromKey)
-    if (!parent.has(toKey)) parent.set(toKey, toKey)
-    union(fromKey, toKey)
-  })
-
-  const groupWires = new Map<string, typeof wires>()
-  const groupEndpoints = new Map<string, Set<string>>()
-  wires.forEach((wire) => {
-    const fromKey = endpointKey(wire.from.componentId, wire.from.pinName)
-    const root = find(fromKey)
-    const existing = groupWires.get(root) || []
-    existing.push(wire)
-    groupWires.set(root, existing)
-    const endpointSet = groupEndpoints.get(root) || new Set<string>()
-    endpointSet.add(fromKey)
-    endpointSet.add(endpointKey(wire.to.componentId, wire.to.pinName))
-    groupEndpoints.set(root, endpointSet)
-  })
-
-  groupWires.forEach((group, root) => {
-    const endpoints = [...(groupEndpoints.get(root) || new Set<string>())]
-    const branchEndpoints = endpoints.filter(key => (endpointDegree.get(key) || 0) >= 3)
-
-    if (branchEndpoints.length === 0) {
-      group.forEach((wire) => {
-        const from = endpointPosition(endpointKey(wire.from.componentId, wire.from.pinName))
-        const to = endpointPosition(endpointKey(wire.to.componentId, wire.to.pinName))
-        if (!from || !to) return
-        const midX = from.x + Math.abs(to.x - from.x) / 2
-        wirePathById.set(wire.id, `M ${from.x} ${from.y} L ${midX} ${from.y} L ${midX} ${to.y} L ${to.x} ${to.y}`)
-        junctionDotByWireId.set(wire.id, [])
-      })
-      return
-    }
-
-    const positions = endpoints
-      .map((key) => ({ key, pos: endpointPosition(key) }))
-      .filter((entry): entry is { key: string; pos: { x: number; y: number } } => !!entry.pos)
-
-    if (positions.length === 0) return
-
-    const avgX = positions.reduce((sum, entry) => sum + entry.pos.x, 0) / positions.length
-    const minX = Math.min(...positions.map(entry => entry.pos.x))
-    const maxX = Math.max(...positions.map(entry => entry.pos.x))
-    let trunkX = Math.max(minX, Math.min(maxX, avgX))
-
-    if (Math.abs(maxX - minX) < 10) {
-      trunkX = avgX + 12
-    }
-
-    const groupDots = branchEndpoints
-      .map((key) => ({ key, pos: endpointPosition(key) }))
-      .filter((entry): entry is { key: string; pos: { x: number; y: number } } => !!entry.pos)
-      .map((entry) => ({ x: trunkX, y: entry.pos.y, key: `junction-${root}-${entry.key}` }))
-
-    group.forEach((wire) => {
-      const from = endpointPosition(endpointKey(wire.from.componentId, wire.from.pinName))
-      const to = endpointPosition(endpointKey(wire.to.componentId, wire.to.pinName))
-      if (!from || !to) return
-      wirePathById.set(wire.id, `M ${from.x} ${from.y} L ${trunkX} ${from.y} L ${trunkX} ${to.y} L ${to.x} ${to.y}`)
-      junctionDotByWireId.set(wire.id, groupDots)
+    // Remove zero-length consecutive points.
+    const deduped: Array<{ x: number; y: number }> = []
+    normalized.forEach((point) => {
+      const prev = deduped[deduped.length - 1]
+      if (!prev || prev.x !== point.x || prev.y !== point.y) {
+        deduped.push(point)
+      }
     })
+
+    if (deduped.length < 2) return [fromPos, toPos]
+
+    // Remove collinear middle points to avoid mirrored-C overlaps and dangling visual kinks.
+    const compact: Array<{ x: number; y: number }> = [deduped[0]]
+    for (let i = 1; i < deduped.length - 1; i += 1) {
+      const a = compact[compact.length - 1]
+      const b = deduped[i]
+      const c = deduped[i + 1]
+      const collinear = (a.x === b.x && b.x === c.x) || (a.y === b.y && b.y === c.y)
+      if (!collinear) compact.push(b)
+    }
+    compact.push(deduped[deduped.length - 1])
+
+    const orthogonalized: Array<{ x: number; y: number }> = [compact[0]]
+    for (let i = 1; i < compact.length; i += 1) {
+      const prev = orthogonalized[orthogonalized.length - 1]
+      const next = compact[i]
+      if (prev.x !== next.x && prev.y !== next.y) {
+        // Enforce orthogonal rendering: convert diagonal into one elbow.
+        orthogonalized.push({ x: next.x, y: prev.y })
+      }
+      orthogonalized.push(next)
+    }
+
+    return orthogonalized.length >= 2 ? orthogonalized : [fromPos, toPos]
+  }
+
+  const buildPathString = (points: Array<{ x: number; y: number }>): string => {
+    if (points.length < 2) return ''
+    return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ')
+  }
+
+  const endpointUseCount = new Map<string, number>()
+  const renderedPathUseCount = new Map<string, number>()
+  wires.forEach((wire) => {
+    const fromComp = placedComponents.find(c => c.id === wire.from.componentId)
+    const toComp = placedComponents.find(c => c.id === wire.to.componentId)
+    if (!fromComp || !toComp) return
+    const fromPos = getPinPositionForComponent(fromComp, wire.from.pinName)
+    const toPos = getPinPositionForComponent(toComp, wire.to.pinName)
+    if (!fromPos || !toPos) return
+    const fromKey = toPointKey(fromPos.x, fromPos.y)
+    const toKey = toPointKey(toPos.x, toPos.y)
+    endpointUseCount.set(fromKey, (endpointUseCount.get(fromKey) || 0) + 1)
+    endpointUseCount.set(toKey, (endpointUseCount.get(toKey) || 0) + 1)
   })
 
   // Render wire between two pins
@@ -775,16 +911,36 @@ export const Canvas: React.FC = () => {
     const toPos = getPinPositionForComponent(toComp, wire.to.pinName)
     if (!fromPos || !toPos) return null
 
-    const routedPath = Array.isArray(wire.routePoints) && wire.routePoints.length >= 2
-      ? wire.routePoints.map((point: { x: number; y: number }, index: number) => (
-        `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`
-      )).join(' ')
-      : null
+    let points = sanitizeWirePoints(fromPos, toPos, wire.routePoints)
+    const pathFingerprint = points.map(point => toPointKey(point.x, point.y)).join('|')
+    const overlapLane = renderedPathUseCount.get(pathFingerprint) || 0
+    renderedPathUseCount.set(pathFingerprint, overlapLane + 1)
 
-    const wirePath = routedPath
-      || wirePathById.get(wire.id)
-      || `M ${fromPos.x} ${fromPos.y} L ${(fromPos.x + toPos.x) / 2} ${fromPos.y} L ${(fromPos.x + toPos.x) / 2} ${toPos.y} L ${toPos.x} ${toPos.y}`
-    const junctionDots = routedPath ? [] : (junctionDotByWireId.get(wire.id) || [])
+    // Orthogonal overlap avoidance for duplicated auto-generated paths.
+    if (overlapLane > 0 && wire.routingIntent !== 'manual') {
+      const dx = Math.abs(toPos.x - fromPos.x)
+      const dy = Math.abs(toPos.y - fromPos.y)
+      const offset = overlapLane * 4
+      points = points.map(point => ({
+        x: dx >= dy ? point.x : point.x + offset,
+        y: dx >= dy ? point.y + offset : point.y
+      }))
+      points[0] = { x: fromPos.x, y: fromPos.y }
+      points[points.length - 1] = { x: toPos.x, y: toPos.y }
+    }
+
+    const wirePath = buildPathString(points)
+    if (!wirePath) return null
+
+    const endpointDots: Array<{ x: number; y: number; key: string }> = []
+    const fromKey = toPointKey(fromPos.x, fromPos.y)
+    const toKey = toPointKey(toPos.x, toPos.y)
+    if ((endpointUseCount.get(fromKey) || 0) > 1) {
+      endpointDots.push({ x: fromPos.x, y: fromPos.y, key: `${wire.id}-from` })
+    }
+    if ((endpointUseCount.get(toKey) || 0) > 1) {
+      endpointDots.push({ x: toPos.x, y: toPos.y, key: `${wire.id}-to` })
+    }
 
     return (
       <g key={wire.id}>
@@ -812,10 +968,8 @@ export const Canvas: React.FC = () => {
             removeWire(wire.id)
           }}
         />
-        {/* Dots at connection points */}
-        <circle cx={fromPos.x} cy={fromPos.y} r="3" fill="#2196F3" style={{ pointerEvents: 'none' }} />
-        <circle cx={toPos.x} cy={toPos.y} r="3" fill="#2196F3" style={{ pointerEvents: 'none' }} />
-        {junctionDots.map(dot => (
+        {/* Dots only for actual shared endpoints/junction termination points */}
+        {endpointDots.map(dot => (
           <circle key={dot.key} cx={dot.x} cy={dot.y} r="4" fill="#2196F3" style={{ pointerEvents: 'none' }} />
         ))}
       </g>
@@ -950,8 +1104,20 @@ export const Canvas: React.FC = () => {
             const isNetPort = component.catalogId === 'netport'
             const isPublicPort = component.catalogId === 'public-port'
             const isNet = component.catalogId === 'net'
+            const isNetLabel = component.catalogId === 'netlabel'
+            const labelNetName = String(component.props.net || component.props.netName || '').trim()
+            const isHelperNetLabel = isNetLabel && (
+              component.props.internalHelper === true
+              || !labelNetName
+              || /^netlabel-\d+$/i.test(String(component.name || ''))
+            )
 
-            if (!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !isPublicPort && !getCatalogItem(component.catalogId)) {
+            // Internal helper nodes must never render or become selectable.
+            if (isHelperNetLabel) {
+              return null
+            }
+
+            if (!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !isPublicPort && !isNetLabel && !getCatalogItem(component.catalogId)) {
               return null
             }
             
@@ -968,12 +1134,14 @@ export const Canvas: React.FC = () => {
                     ? 'rgba(156, 39, 176, 0.15)'
                     : isPublicPort
                     ? 'rgba(255, 193, 7, 0.18)'
+                    : isNetLabel
+                    ? 'transparent'
                     : isSheetInstance
                     ? 'rgba(76, 175, 80, 0.12)'
                     : isSubcircuit
                     ? 'rgba(255, 152, 0, 0.12)'
                     : isSymbolInstance
-                    ? 'rgba(0, 188, 212, 0.12)'
+                    ? 'transparent'
                     : 'transparent',
                   border: isSelected
                     ? '2px solid #007acc'
@@ -981,6 +1149,8 @@ export const Canvas: React.FC = () => {
                     ? '1px dashed rgba(156, 39, 176, 0.7)'
                     : isPublicPort
                     ? '1px solid rgba(255, 193, 7, 0.9)'
+                    : isNetLabel
+                    ? 'none'
                     : isNet
                     ? 'none'
                     : isSheetInstance
@@ -988,7 +1158,7 @@ export const Canvas: React.FC = () => {
                     : isSubcircuit
                     ? '2px dashed rgba(255, 152, 0, 0.55)'
                     : isSymbolInstance
-                    ? '2px dashed rgba(0, 188, 212, 0.6)'
+                    ? 'none'
                     : '1px solid #3e3e3e',
                   cursor: cursorNearPin?.componentId === component.id ? 'crosshair' : 'move',
                   boxShadow: isSelected ? '0 0 0 2px rgba(0, 122, 204, 0.3)' : 'none',
@@ -1034,7 +1204,7 @@ export const Canvas: React.FC = () => {
                   fontWeight: 500,
                   pointerEvents: 'none'
                 }}>
-                  {!isNet && !isPublicPort && (
+                  {!isNet && !isPublicPort && !isNetLabel && (
                     <>
                   {isSheetInstance ? '🗂 ' : isSubcircuit ? '📦 ' : isNetPort ? '🔌 ' : ''}{component.name}
                   {component.props.resistance && ` (${component.props.resistance})`}
@@ -1042,6 +1212,26 @@ export const Canvas: React.FC = () => {
                     </>
                   )}
                 </div>
+
+                {isNetLabel && (
+                  <div style={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: 0,
+                    transform: 'translateY(-50%)',
+                    fontSize: 11,
+                    color: isSelected ? '#007acc' : '#8bc34a',
+                    fontWeight: 700,
+                    pointerEvents: 'none',
+                    whiteSpace: 'nowrap',
+                    padding: '1px 6px',
+                    borderRadius: 3,
+                    border: `1px solid ${isSelected ? '#007acc' : 'rgba(139,195,74,0.5)'}`,
+                    background: 'rgba(20, 30, 20, 0.55)'
+                  }}>
+                    {String(component.props.net || component.props.netName || component.name || '').trim() || 'NET'}
+                  </div>
+                )}
 
                 {isSheetInstance && (
                   <div style={{
@@ -1122,7 +1312,7 @@ export const Canvas: React.FC = () => {
                   />
                 )}
 
-                {!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !isPublicPort && (
+                {!isSubcircuit && !isSheetInstance && !isSymbolInstance && !isNetPort && !isPublicPort && !isNetLabel && (
                   <div
                     style={{
                       width: baseSize.width,
@@ -1137,6 +1327,19 @@ export const Canvas: React.FC = () => {
                       height={baseSize.height}
                       color={isSelected ? '#007acc' : '#4CAF50'}
                     />
+                  </div>
+                )}
+
+                {isSymbolInstance && (
+                  <div
+                    style={{
+                      width: baseSize.width,
+                      height: baseSize.height,
+                      transform: `rotate(${rotation}deg)`,
+                      transformOrigin: 'center center'
+                    }}
+                  >
+                    {renderSymbolGeometry(component, isSelected)}
                   </div>
                 )}
 

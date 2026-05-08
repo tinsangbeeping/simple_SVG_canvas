@@ -76,6 +76,18 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
   const deleteSelected = () => {
     if (!selected) return
 
+    if (selected.kind === 'multi') {
+      const shapeSet = new Set(selected.shapeIds)
+      const portSet = new Set(selected.portIds)
+      onDocumentChange({
+        ...document,
+        shapes: document.shapes.filter(shape => !shapeSet.has(shape.id)),
+        ports: document.ports.filter(port => !portSet.has(port.id))
+      })
+      onSelectionChange(null)
+      return
+    }
+
     if (selected.kind === 'shape') {
       onDocumentChange({
         ...document,
@@ -269,7 +281,25 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         maxY: port.schY + 4
       }))
 
-      if (selectedPort) {
+      const selectedShapeIds = document.shapes
+        .filter(shape => intersects(shapeBounds(shape)))
+        .map(shape => shape.id)
+      const selectedPortIds = document.ports
+        .filter(port => intersects({
+          minX: port.schX - 4,
+          maxX: port.schX + 4,
+          minY: port.schY - 4,
+          maxY: port.schY + 4
+        }))
+        .map(port => port.id)
+
+      if (selectedShapeIds.length === 1 && selectedPortIds.length === 0) {
+        onSelectionChange({ kind: 'shape', id: selectedShapeIds[0] })
+      } else if (selectedPortIds.length === 1 && selectedShapeIds.length === 0) {
+        onSelectionChange({ kind: 'port', id: selectedPortIds[0] })
+      } else if (selectedShapeIds.length > 0 || selectedPortIds.length > 0) {
+        onSelectionChange({ kind: 'multi', shapeIds: selectedShapeIds, portIds: selectedPortIds })
+      } else if (selectedPort) {
         onSelectionChange({ kind: 'port', id: selectedPort.id })
       } else {
         const selectedShape = [...document.shapes].reverse().find(shape => intersects(shapeBounds(shape)))
@@ -395,7 +425,10 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
   }, [draftEnd, draftStart, toolMode])
 
   const renderShape = (shape: SymbolShape, isDraft = false) => {
-    const isSelected = !isDraft && selected?.kind === 'shape' && selected.id === shape.id
+    const isSelected = !isDraft && (
+      (selected?.kind === 'shape' && selected.id === shape.id)
+      || (selected?.kind === 'multi' && selected.shapeIds.includes(shape.id))
+    )
     const stroke = isSelected ? '#2ea8ff' : '#88d498'
     const common = {
       stroke,
@@ -404,7 +437,33 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       opacity: isDraft ? 0.6 : 1,
       onMouseDown: (event: React.MouseEvent) => {
         event.stopPropagation()
-        onSelectionChange({ kind: 'shape', id: shape.id })
+        if (event.ctrlKey || event.metaKey) {
+          if (selected?.kind === 'multi') {
+            const already = selected.shapeIds.includes(shape.id)
+            const shapeIds = already
+              ? selected.shapeIds.filter(id => id !== shape.id)
+              : [...selected.shapeIds, shape.id]
+            if (shapeIds.length === 0 && selected.portIds.length === 0) {
+              onSelectionChange(null)
+            } else if (shapeIds.length === 1 && selected.portIds.length === 0) {
+              onSelectionChange({ kind: 'shape', id: shapeIds[0] })
+            } else {
+              onSelectionChange({ kind: 'multi', shapeIds, portIds: selected.portIds })
+            }
+          } else if (selected?.kind === 'shape') {
+            if (selected.id === shape.id) {
+              onSelectionChange(null)
+            } else {
+              onSelectionChange({ kind: 'multi', shapeIds: [selected.id, shape.id], portIds: [] })
+            }
+          } else if (selected?.kind === 'port') {
+            onSelectionChange({ kind: 'multi', shapeIds: [shape.id], portIds: [selected.id] })
+          } else {
+            onSelectionChange({ kind: 'shape', id: shape.id })
+          }
+        } else {
+          onSelectionChange({ kind: 'shape', id: shape.id })
+        }
         onToolModeChange('select')
       }
     }
@@ -434,7 +493,33 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         fontSize={8}
         onMouseDown={(event) => {
           event.stopPropagation()
-          onSelectionChange({ kind: 'shape', id: shape.id })
+          if (event.ctrlKey || event.metaKey) {
+            if (selected?.kind === 'multi') {
+              const already = selected.shapeIds.includes(shape.id)
+              const shapeIds = already
+                ? selected.shapeIds.filter(id => id !== shape.id)
+                : [...selected.shapeIds, shape.id]
+              if (shapeIds.length === 0 && selected.portIds.length === 0) {
+                onSelectionChange(null)
+              } else if (shapeIds.length === 1 && selected.portIds.length === 0) {
+                onSelectionChange({ kind: 'shape', id: shapeIds[0] })
+              } else {
+                onSelectionChange({ kind: 'multi', shapeIds, portIds: selected.portIds })
+              }
+            } else if (selected?.kind === 'shape') {
+              if (selected.id === shape.id) {
+                onSelectionChange(null)
+              } else {
+                onSelectionChange({ kind: 'multi', shapeIds: [selected.id, shape.id], portIds: [] })
+              }
+            } else if (selected?.kind === 'port') {
+              onSelectionChange({ kind: 'multi', shapeIds: [shape.id], portIds: [selected.id] })
+            } else {
+              onSelectionChange({ kind: 'shape', id: shape.id })
+            }
+          } else {
+            onSelectionChange({ kind: 'shape', id: shape.id })
+          }
           onToolModeChange('select')
         }}
       >
@@ -496,14 +581,42 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
 
           {document.shapes.map(shape => renderShape(shape))}
           {document.ports.map(port => {
-            const isSelected = selected?.kind === 'port' && selected.id === port.id
+            const isSelected =
+              (selected?.kind === 'port' && selected.id === port.id)
+              || (selected?.kind === 'multi' && selected.portIds.includes(port.id))
             const color = isSelected ? '#2ea8ff' : '#ffd166'
             return (
               <g
                 key={port.id}
                 onMouseDown={(event) => {
                   event.stopPropagation()
-                  onSelectionChange({ kind: 'port', id: port.id })
+                  if (event.ctrlKey || event.metaKey) {
+                    if (selected?.kind === 'multi') {
+                      const already = selected.portIds.includes(port.id)
+                      const portIds = already
+                        ? selected.portIds.filter(id => id !== port.id)
+                        : [...selected.portIds, port.id]
+                      if (selected.shapeIds.length === 0 && portIds.length === 0) {
+                        onSelectionChange(null)
+                      } else if (portIds.length === 1 && selected.shapeIds.length === 0) {
+                        onSelectionChange({ kind: 'port', id: portIds[0] })
+                      } else {
+                        onSelectionChange({ kind: 'multi', shapeIds: selected.shapeIds, portIds })
+                      }
+                    } else if (selected?.kind === 'port') {
+                      if (selected.id === port.id) {
+                        onSelectionChange(null)
+                      } else {
+                        onSelectionChange({ kind: 'multi', shapeIds: [], portIds: [selected.id, port.id] })
+                      }
+                    } else if (selected?.kind === 'shape') {
+                      onSelectionChange({ kind: 'multi', shapeIds: [selected.id], portIds: [port.id] })
+                    } else {
+                      onSelectionChange({ kind: 'port', id: port.id })
+                    }
+                  } else {
+                    onSelectionChange({ kind: 'port', id: port.id })
+                  }
                   onToolModeChange('select')
                 }}
               >

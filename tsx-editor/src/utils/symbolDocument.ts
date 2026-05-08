@@ -288,6 +288,18 @@ export const updateSymbolSelectionAfterDelete = (
   deletedKind: 'shape' | 'port'
 ): SymbolSelection => {
   if (!selection) return null
+  if (selection.kind === 'multi') {
+    const shapeIds = deletedKind === 'shape'
+      ? selection.shapeIds.filter(id => id !== deletedId)
+      : selection.shapeIds
+    const portIds = deletedKind === 'port'
+      ? selection.portIds.filter(id => id !== deletedId)
+      : selection.portIds
+    if (shapeIds.length === 0 && portIds.length === 0) return null
+    if (shapeIds.length === 1 && portIds.length === 0) return { kind: 'shape', id: shapeIds[0] }
+    if (portIds.length === 1 && shapeIds.length === 0) return { kind: 'port', id: portIds[0] }
+    return { kind: 'multi', shapeIds, portIds }
+  }
   if (selection.kind === deletedKind && selection.id === deletedId) return null
   return selection
 }

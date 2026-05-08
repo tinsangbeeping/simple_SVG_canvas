@@ -2224,6 +2224,10 @@ const toAttrList = (props: Record<string, any>): string[] => {
       'sheetPath',
       'src',
       'ports',
+      'symbolPorts',
+      'symbolShapes',
+      'symbolWidth',
+      'symbolHeight',
       'netName',
       'netId',
       'netAnchorKind',
@@ -2418,6 +2422,9 @@ const createGraphExportArtifacts = (
     const toRef = traceEndpointRef(toComponent, wire.to.pinName)
     if (!fromRef || !toRef) return
 
+    // Avoid exporting abstract net-to-net edges that explode into unreadable netlist-style wiring.
+    if (fromRef.startsWith('net.') && toRef.startsWith('net.')) return
+
     exportGraph.nodes.push({
       kind: 'trace',
       from: fromRef,
@@ -2427,13 +2434,28 @@ const createGraphExportArtifacts = (
     })
   })
 
+  const labelsByNet = new Map<string, Array<{ x: number; y: number; explicit: boolean }>>()
   components
     .filter(component => component.catalogId === 'netlabel')
     .forEach((component) => {
       const rawNet = String(component.props.net || component.props.netName || component.name || '').trim()
       if (!rawNet) return
-      exportGraph.nodes.push({ kind: 'netlabel', net: canonicalizeNetName(rawNet) })
+      const net = canonicalizeNetName(rawNet)
+      const x = Number(component.props.schX || 0)
+      const y = Number(component.props.schY || 0)
+      const explicit = component.props.layoutLocked === true || x !== 0 || y !== 0
+      const bucket = labelsByNet.get(net) || []
+      bucket.push({ x, y, explicit })
+      labelsByNet.set(net, bucket)
     })
+
+  labelsByNet.forEach((labels, net) => {
+    const explicitLabels = labels.filter(label => label.explicit)
+    const source = explicitLabels.length > 0 ? explicitLabels : labels
+    if (source.length > 0) {
+      exportGraph.nodes.push({ kind: 'netlabel', net })
+    }
+  })
 
   compileExportGraphToTSXNodes(exportGraph).forEach(snippet => traceSet.add(snippet))
 

@@ -75,4 +75,5 @@ export interface SymbolDocument {
 export type SymbolSelection =
   | { kind: 'shape'; id: string }
   | { kind: 'port'; id: string }
+  | { kind: 'multi'; shapeIds: string[]; portIds: string[] }
   | null

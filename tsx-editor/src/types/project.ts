@@ -52,6 +52,11 @@ export interface SymbolDefinition {
   name: string // display name
   filePath: string // e.g., "symbols/Resistor.tsx"
   ports: Array<{ name: string; x: number; y: number }> // pin definitions
+  geometry?: {
+    width: number
+    height: number
+    shapes: Array<Record<string, any>>
+  }
   drawing: {
     type: 'svg' | 'bitmap' | 'jsx'
     content: string
