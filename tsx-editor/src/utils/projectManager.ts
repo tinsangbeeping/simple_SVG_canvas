@@ -617,32 +617,28 @@ const isNonDegenerateShape = (shape: Record<string, any>): boolean => {
 
 const normalizeSymbolGeometry = (
   rawShapes: Array<Record<string, any>>,
-  rawPorts: Array<{ name: string; x: number; y: number }>
+  rawPorts: Array<{ name: string; x: number; y: number; side?: string; order?: number }>
 ): {
   width: number
   height: number
   origin: { x: number; y: number }
   shapes: Array<Record<string, any>>
-  ports: Array<{ name: string; x: number; y: number }>
+  ports: Array<{ name: string; x: number; y: number; side?: string; order?: number }>
 } => {
   const shapes = rawShapes.filter(isNonDegenerateShape)
-  const bounds: Array<{ minX: number; minY: number; maxX: number; maxY: number }> = []
 
+  // Use ONLY shape bounds for normalization origin — stray port positions must not
+  // distort the coordinate system and cause visual Y/X inversion.
+  const shapeBoundsArr: Array<{ minX: number; minY: number; maxX: number; maxY: number }> = []
   shapes.forEach((shape) => {
     const bound = shapeBounds(shape)
-    if (bound) bounds.push(bound)
+    if (bound) shapeBoundsArr.push(bound)
   })
 
-  rawPorts.forEach((port) => {
-    const x = toFiniteNumber(port.x)
-    const y = toFiniteNumber(port.y)
-    bounds.push({ minX: x, minY: y, maxX: x, maxY: y })
-  })
-
-  const minX = bounds.length > 0 ? Math.min(...bounds.map(bound => bound.minX)) : 0
-  const minY = bounds.length > 0 ? Math.min(...bounds.map(bound => bound.minY)) : 0
-  const maxX = bounds.length > 0 ? Math.max(...bounds.map(bound => bound.maxX)) : 120
-  const maxY = bounds.length > 0 ? Math.max(...bounds.map(bound => bound.maxY)) : 80
+  const minX = shapeBoundsArr.length > 0 ? Math.min(...shapeBoundsArr.map(b => b.minX)) : 0
+  const minY = shapeBoundsArr.length > 0 ? Math.min(...shapeBoundsArr.map(b => b.minY)) : 0
+  const maxX = shapeBoundsArr.length > 0 ? Math.max(...shapeBoundsArr.map(b => b.maxX)) : 120
+  const maxY = shapeBoundsArr.length > 0 ? Math.max(...shapeBoundsArr.map(b => b.maxY)) : 80
 
   const normalizeX = (value: unknown) => toFiniteNumber(value) - minX
   const normalizeY = (value: unknown) => toFiniteNumber(value) - minY
@@ -693,10 +689,12 @@ const normalizeSymbolGeometry = (
 
   const normalizedPorts = rawPorts
     .filter(port => String(port.name || '').trim().length > 0)
-    .map(port => ({
+    .map((port, index) => ({
       name: String(port.name || '').trim(),
       x: normalizeX(port.x),
-      y: normalizeY(port.y)
+      y: normalizeY(port.y),
+      ...(port.side ? { side: port.side } : {}),
+      order: port.order !== undefined ? port.order : index
     }))
 
   return {
@@ -719,7 +717,13 @@ export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
     const name = extractSymbolComponentName(path, content)
     const parsedDoc = importSymbolTsxToDocument(content, name)
     const rawPorts = parsedDoc.ports.length > 0
-      ? parsedDoc.ports.map(port => ({ name: port.name, x: toFiniteNumber(port.schX), y: toFiniteNumber(port.schY) }))
+      ? parsedDoc.ports.map(port => ({
+          name: port.name,
+          x: toFiniteNumber(port.schX),
+          y: toFiniteNumber(port.schY),
+          side: port.side,
+          order: port.order
+        }))
       : extractPortsFromSymbolComponentContent(content).map(portName => ({ name: portName, x: 0, y: 0 }))
 
     const normalized = normalizeSymbolGeometry(

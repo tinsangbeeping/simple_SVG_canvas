@@ -111,7 +111,9 @@ const symbolShapeToTsx = (shape: SymbolShape): string => {
 }
 
 const symbolPortToTsx = (port: SymbolPort): string => {
-  return `<port name="${escapeStringLiteral(port.name)}" direction="${port.direction}" schX={${toTsxNumber(port.schX)}} schY={${toTsxNumber(port.schY)}} />`
+  const sidePart = port.side ? ` side="${port.side}"` : ''
+  const orderPart = port.order !== undefined ? ` order={${port.order}}` : ''
+  return `<port name="${escapeStringLiteral(port.name)}" direction="${port.direction}"${sidePart}${orderPart} schX={${toTsxNumber(port.schX)}} schY={${toTsxNumber(port.schY)}} />`
 }
 
 const toSafeComponentIdentifier = (raw: string): string => {
@@ -283,14 +285,22 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
   portTags.forEach(tag => {
     const name = parseStringProp(tag, 'name')
     const direction = parseStringProp(tag, 'direction')
+    const side = parseStringProp(tag, 'side')
+    const order = parseNumericProp(tag, 'order')
     const schX = parseNumericProp(tag, 'schX')
     const schY = parseNumericProp(tag, 'schY')
     if (name.value !== null && schX.value !== null && schY.value !== null) {
       const parsedDirection = (direction.value || 'passive') as SymbolPortDirection
+      const validSides = ['left', 'right', 'top', 'bottom']
+      const parsedSide = side.value && validSides.includes(side.value)
+        ? (side.value as import('../types/symbolDocument').SymbolPortSide)
+        : undefined
       document.ports.push({
         id: nextImportedId('port'),
         name: name.value,
         direction: ['input', 'output', 'inout', 'passive'].includes(parsedDirection) ? parsedDirection : 'passive',
+        side: parsedSide,
+        order: order.value !== null ? order.value : undefined,
         schX: schX.value,
         schY: schY.value
       })

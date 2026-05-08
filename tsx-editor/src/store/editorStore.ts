@@ -1653,17 +1653,23 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       props.symbolPorts = resolvedSymbolDefinition?.ports.map(port => ({
         name: port.name,
         schX: Number(port.x || 0),
-        schY: Number(port.y || 0)
+        schY: Number(port.y || 0),
+        side: (port as any).side ?? undefined,
+        order: (port as any).order !== undefined ? Number((port as any).order) : undefined
       }))
         || symbolComponentDefinition?.portGeometry.map(port => ({
           name: String(port.name || ''),
           schX: Number(port.schX || 0),
-          schY: Number(port.schY || 0)
+          schY: Number(port.schY || 0),
+          side: (port as any).side ?? undefined,
+          order: (port as any).order !== undefined ? Number((port as any).order) : undefined
         }))
         || importedSymbolComponentDefinition?.portGeometry.map(port => ({
           name: String(port.name || ''),
           schX: Number(port.schX || 0),
-          schY: Number(port.schY || 0)
+          schY: Number(port.schY || 0),
+          side: (port as any).side ?? undefined,
+          order: (port as any).order !== undefined ? Number((port as any).order) : undefined
         }))
         || []
       props.symbolShapes = resolvedSymbolDefinition?.geometry?.shapes?.map(shape => ({ ...shape }))

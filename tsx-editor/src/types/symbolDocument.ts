@@ -52,11 +52,14 @@ export type SymbolShape =
   | SchematicTextShape
 
 export type SymbolPortDirection = 'input' | 'output' | 'inout' | 'passive'
+export type SymbolPortSide = 'left' | 'right' | 'top' | 'bottom'
 
 export interface SymbolPort {
   id: string
   name: string
   direction: SymbolPortDirection
+  side?: SymbolPortSide
+  order?: number
   schX: number
   schY: number
 }

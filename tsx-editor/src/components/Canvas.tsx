@@ -191,7 +191,7 @@ export const Canvas: React.FC = () => {
     width: number
     height: number
     origin: { x: number; y: number }
-    ports: Array<{ name: string; schX: number; schY: number }>
+    ports: Array<{ name: string; schX: number; schY: number; side?: string; order?: number }>
     shapes: Array<any>
   } => {
     const symbolName = String(component.props.symbolName || '').trim()
@@ -199,7 +199,7 @@ export const Canvas: React.FC = () => {
     const resolved = symbolRegistryByName.get(symbolName) || symbolRegistryByName.get(symbolPath)
 
     const localPorts = Array.isArray(component.props.symbolPorts)
-      ? (component.props.symbolPorts as Array<{ name: string; schX?: number; schY?: number; x?: number; y?: number }>)
+      ? (component.props.symbolPorts as Array<{ name: string; schX?: number; schY?: number; x?: number; y?: number; side?: string; order?: number }>)
       : []
     const localShapes = Array.isArray(component.props.symbolShapes)
       ? (component.props.symbolShapes as Array<any>)
@@ -208,12 +208,16 @@ export const Canvas: React.FC = () => {
     const resolvedPorts = (resolved?.ports || []).map(port => ({
       name: String(port.name || ''),
       schX: Number(port.x || 0),
-      schY: Number(port.y || 0)
+      schY: Number(port.y || 0),
+      side: (port as any).side as string | undefined,
+      order: (port as any).order as number | undefined
     }))
     const normalizedLocalPorts = localPorts.map((port) => ({
       name: String(port.name || ''),
       schX: Number(port.schX ?? port.x ?? 0),
-      schY: Number(port.schY ?? port.y ?? 0)
+      schY: Number(port.schY ?? port.y ?? 0),
+      side: port.side,
+      order: port.order
     }))
 
     const resolvedShapes = Array.isArray(resolved?.geometry?.shapes)
@@ -266,9 +270,11 @@ export const Canvas: React.FC = () => {
     const minY = points.length > 0 ? Math.min(...points.map(point => point.y)) : 0
     const maxX = points.length > 0 ? Math.max(...points.map(point => point.x)) : width
     const maxY = points.length > 0 ? Math.max(...points.map(point => point.y)) : height
-    const outOfBounds = minX < 0 || minY < 0 || maxX > width || maxY > height
-    const shiftX = outOfBounds ? -origin.x : 0
-    const shiftY = outOfBounds ? -origin.y : 0
+    // Only shift if shapes have unexpected negative coordinates (should not happen for
+    // already-normalized geometry, but guard against edge cases).
+    const needsShift = minX < 0 || minY < 0
+    const shiftX = needsShift ? -minX : 0
+    const shiftY = needsShift ? -minY : 0
 
     return {
       width,
@@ -277,7 +283,9 @@ export const Canvas: React.FC = () => {
       ports: ports.map((port) => ({
         name: String(port.name || ''),
         schX: Number(port.schX || 0) + shiftX,
-        schY: Number(port.schY || 0) + shiftY
+        schY: Number(port.schY || 0) + shiftY,
+        side: port.side,
+        order: port.order
       })),
       shapes: shapes.map(shape => shiftSymbolShape(shape, shiftX, shiftY))
     }
@@ -365,13 +373,33 @@ export const Canvas: React.FC = () => {
       const resolved = getResolvedSymbolData(component)
       const symbolPorts = resolved.ports
       if (symbolPorts.length > 0) {
-        return symbolPorts
+        // Sort ports: left/right side ports by Y (top→bottom), top/bottom side ports by X (left→right).
+        // Ports with explicit `order` field are sorted within their side by order.
+        const sorted = [...symbolPorts]
           .filter(port => String(port.name || '').trim().length > 0)
-          .map(port => ({
-            name: String(port.name),
-            x: Number(port.schX || 0),
-            y: Number(port.schY || 0)
-          }))
+          .sort((a, b) => {
+            const sideA = a.side || 'left'
+            const sideB = b.side || 'left'
+            if (sideA !== sideB) return 0  // different sides: keep relative insertion order
+            const orderA = a.order !== undefined ? a.order : Number(a.schY || 0)
+            const orderB = b.order !== undefined ? b.order : Number(b.schY || 0)
+            return orderA - orderB
+          })
+
+        return sorted.map(port => {
+          const side = port.side
+          const symWidth = resolved.width
+          const symHeight = resolved.height
+          let x = Number(port.schX || 0)
+          let y = Number(port.schY || 0)
+          // If a side is explicit, snap the connector point to that edge so wires
+          // enter/exit from the correct boundary.
+          if (side === 'left') x = 0
+          else if (side === 'right') x = symWidth
+          else if (side === 'top') y = 0
+          else if (side === 'bottom') y = symHeight
+          return { name: String(port.name), x, y }
+        })
       }
 
       const ports = ((component.props.ports as string[] | undefined) || []).map(String)
@@ -684,7 +712,9 @@ export const Canvas: React.FC = () => {
             ? portGeometry.map((port: any) => ({
                 name: String(port.name || ''),
                 schX: Number(port.schX ?? port.x ?? 0),
-                schY: Number(port.schY ?? port.y ?? 0)
+                schY: Number(port.schY ?? port.y ?? 0),
+                side: port.side ?? undefined,
+                order: port.order !== undefined ? Number(port.order) : undefined
               }))
             : [],
           symbolShapes: geometry?.shapes || [],

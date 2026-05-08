@@ -178,12 +178,32 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       if (!name) return
       const direction = (window.prompt('Direction (input/output/inout/passive):', 'passive') || 'passive').trim().toLowerCase()
       const normalizedDirection = ['input', 'output', 'inout', 'passive'].includes(direction) ? direction as 'input' | 'output' | 'inout' | 'passive' : 'passive'
+
+      // Infer which side of the symbol boundary this port belongs to,
+      // based on how close the placed point is to each edge of the document.
+      const cx = document.width / 2
+      const cy = document.height / 2
+      const dx = point.x - cx
+      const dy = point.y - cy
+      type PortSide = 'left' | 'right' | 'top' | 'bottom'
+      let inferredSide: PortSide
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        inferredSide = dx >= 0 ? 'right' : 'left'
+      } else {
+        inferredSide = dy >= 0 ? 'bottom' : 'top'
+      }
+      const existingSideOrder = document.ports
+        .filter(p => p.side === inferredSide)
+        .length
+
       const nextDoc: SymbolDocument = {
         ...document,
         ports: [...document.ports, {
           id: nextShapeId('port'),
           name,
           direction: normalizedDirection,
+          side: inferredSide,
+          order: existingSideOrder,
           schX: point.x,
           schY: point.y
         }]
