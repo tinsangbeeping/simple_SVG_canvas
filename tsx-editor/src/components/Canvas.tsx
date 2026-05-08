@@ -439,6 +439,22 @@ export const Canvas: React.FC = () => {
           if (port.side) sideMembers[port.side].push(index)
         })
 
+        const sideAxisDistinctCount = {
+          left: new Set<number>(),
+          right: new Set<number>(),
+          top: new Set<number>(),
+          bottom: new Set<number>()
+        }
+        sorted.forEach((port) => {
+          if (!port.side) return
+          if ((port.side === 'left' || port.side === 'right') && Number.isFinite(port.y)) {
+            sideAxisDistinctCount[port.side].add(Math.round(port.y * 1000) / 1000)
+          }
+          if ((port.side === 'top' || port.side === 'bottom') && Number.isFinite(port.x)) {
+            sideAxisDistinctCount[port.side].add(Math.round(port.x * 1000) / 1000)
+          }
+        })
+
         const distributedCoord = (
           members: number[],
           selfIndex: number,
@@ -456,10 +472,16 @@ export const Canvas: React.FC = () => {
           if (port.side === 'left' || port.side === 'right') {
             // Side-constrained pins: keep explicit y if provided, otherwise distribute vertically.
             if (!Number.isFinite(x)) x = port.side === 'right' ? resolved.width : 0
-            if (!Number.isFinite(y)) y = distributedCoord(sideMembers[port.side], index, resolved.height)
+            const axisDegenerate = sideAxisDistinctCount[port.side].size <= 1 && sideMembers[port.side].length > 1
+            if (!Number.isFinite(y) || axisDegenerate) {
+              y = distributedCoord(sideMembers[port.side], index, resolved.height)
+            }
           } else if (port.side === 'top' || port.side === 'bottom') {
             // Side-constrained pins: keep explicit x if provided, otherwise distribute horizontally.
-            if (!Number.isFinite(x)) x = distributedCoord(sideMembers[port.side], index, resolved.width)
+            const axisDegenerate = sideAxisDistinctCount[port.side].size <= 1 && sideMembers[port.side].length > 1
+            if (!Number.isFinite(x) || axisDegenerate) {
+              x = distributedCoord(sideMembers[port.side], index, resolved.width)
+            }
             if (!Number.isFinite(y)) y = port.side === 'bottom' ? resolved.height : 0
           } else {
             // Unknown side: keep explicit geometry if present, otherwise center fallback.

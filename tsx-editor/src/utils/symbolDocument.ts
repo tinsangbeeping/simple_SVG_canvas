@@ -1,4 +1,4 @@
-import { SymbolDocument, SymbolPort, SymbolPortDirection, SymbolSelection, SymbolShape } from '../types/symbolDocument'
+import { SymbolDocument, SymbolPort, SymbolPortDirection, SymbolPortSide, SymbolSelection, SymbolShape } from '../types/symbolDocument'
 
 const SYMBOL_EDITOR_PREFIX = 'symbols/.editor/'
 const SYMBOL_EDITOR_SUFFIX = '.symbol.json'
@@ -290,15 +290,29 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
     const schX = parseNumericProp(tag, 'schX')
     const schY = parseNumericProp(tag, 'schY')
     if (name.value !== null && schX.value !== null && schY.value !== null) {
-      const parsedDirection = (direction.value || 'passive') as SymbolPortDirection
-      const validSides = ['left', 'right', 'top', 'bottom']
-      const parsedSide = side.value && validSides.includes(side.value)
-        ? (side.value as import('../types/symbolDocument').SymbolPortSide)
-        : undefined
+      const rawDirection = String(direction.value || 'passive').toLowerCase()
+      const validDirections: SymbolPortDirection[] = ['input', 'output', 'inout', 'passive']
+      const directionAsSide: Record<string, SymbolPortSide> = {
+        left: 'left',
+        right: 'right',
+        top: 'top',
+        bottom: 'bottom',
+        up: 'top',
+        down: 'bottom'
+      }
+      const parsedDirection = validDirections.includes(rawDirection as SymbolPortDirection)
+        ? (rawDirection as SymbolPortDirection)
+        : 'passive'
+      const sideValue = String(side.value || '').toLowerCase()
+      const parsedSide = ((): SymbolPortSide | undefined => {
+        if (sideValue in directionAsSide) return directionAsSide[sideValue]
+        if (rawDirection in directionAsSide) return directionAsSide[rawDirection]
+        return undefined
+      })()
       document.ports.push({
         id: nextImportedId('port'),
         name: name.value,
-        direction: ['input', 'output', 'inout', 'passive'].includes(parsedDirection) ? parsedDirection : 'passive',
+        direction: parsedDirection,
         side: parsedSide,
         order: order.value !== null ? order.value : undefined,
         schX: schX.value,
