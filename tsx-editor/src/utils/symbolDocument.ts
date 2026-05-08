@@ -289,7 +289,7 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
     const order = parseNumericProp(tag, 'order')
     const schX = parseNumericProp(tag, 'schX')
     const schY = parseNumericProp(tag, 'schY')
-    if (name.value !== null && schX.value !== null && schY.value !== null) {
+    if (name.value !== null) {
       const rawDirection = String(direction.value || 'passive').toLowerCase()
       const validDirections: SymbolPortDirection[] = ['input', 'output', 'inout', 'passive']
       const directionAsSide: Record<string, SymbolPortSide> = {
@@ -315,9 +315,12 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
         direction: parsedDirection,
         side: parsedSide,
         order: order.value !== null ? order.value : undefined,
-        schX: schX.value,
-        schY: schY.value
+        schX: schX.value !== null ? schX.value : 0,
+        schY: schY.value !== null ? schY.value : 0
       })
+      if (schX.value === null || schY.value === null) {
+        needsManualReview = true
+      }
     } else {
       needsManualReview = needsManualReview || name.dynamic || direction.dynamic || schX.dynamic || schY.dynamic
     }

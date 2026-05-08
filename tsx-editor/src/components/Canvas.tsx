@@ -455,6 +455,19 @@ export const Canvas: React.FC = () => {
           }
         })
 
+        const unknownMembers = sorted
+          .map((port, index) => ({ port, index }))
+          .filter(entry => !entry.port.side)
+          .map(entry => entry.index)
+        const unknownDistinctPoints = new Set(
+          unknownMembers.map((idx) => {
+            const p = sorted[idx]
+            const x = Number.isFinite(p.x) ? Math.round(p.x * 1000) / 1000 : NaN
+            const y = Number.isFinite(p.y) ? Math.round(p.y * 1000) / 1000 : NaN
+            return `${x},${y}`
+          })
+        )
+
         const distributedCoord = (
           members: number[],
           selfIndex: number,
@@ -484,9 +497,19 @@ export const Canvas: React.FC = () => {
             }
             if (!Number.isFinite(y)) y = port.side === 'bottom' ? resolved.height : 0
           } else {
-            // Unknown side: keep explicit geometry if present, otherwise center fallback.
-            x = toFinite(x, resolved.width / 2)
-            y = toFinite(y, resolved.height / 2)
+            // Unknown side: if geometry is degenerate, fall back to legacy distributed
+            // left/right layout to avoid one-point overlap.
+            const unknownDegenerate = unknownMembers.length > 1 && unknownDistinctPoints.size <= 1
+            if (unknownDegenerate) {
+              const rank = unknownMembers.indexOf(index)
+              const row = Math.floor(rank / 2)
+              const isLeft = rank % 2 === 0
+              x = isLeft ? 0 : resolved.width
+              y = 18 + row * 18
+            } else {
+              x = toFinite(x, resolved.width / 2)
+              y = toFinite(y, resolved.height / 2)
+            }
           }
 
           return {
