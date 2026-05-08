@@ -1068,20 +1068,10 @@ const mergeElectricalNets = (
     return component
   })
 
-  const mergedWires = wires.map((wire) => {
-    const remapEndpoint = (endpoint: { componentId: string; pinName: string }) => {
-      const comp = byId.get(endpoint.componentId)
-      if (!isNetLikeComponent(comp)) return endpoint
-      const repId = componentToRepresentative.get(endpoint.componentId) || endpoint.componentId
-      return { componentId: repId, pinName: 'port' }
-    }
-
-    return {
-      ...wire,
-      from: remapEndpoint(wire.from),
-      to: remapEndpoint(wire.to)
-    }
-  })
+  // Preserve original wire endpoints so each named-net anchor remains local.
+  // We only canonicalize component net metadata above; geometry should not be
+  // collapsed to a single representative endpoint.
+  const mergedWires = wires
 
   return {
     components: mergedComponents,
@@ -1630,6 +1620,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     const symbolComponentDefinition = symbolComponentRegistry[tagName]
     const importedSubcircuitDefinition = importedComponentPath ? subcircuitRegistryByPath.get(importedComponentPath) : undefined
     const importedSymbolComponentDefinition = importedComponentPath ? symbolComponentRegistryByPath.get(importedComponentPath) : undefined
+    const symbolComponentDefinitionAny = symbolComponentDefinition as any
+    const importedSymbolComponentDefinitionAny = importedSymbolComponentDefinition as any
     const resolvedSymbolDefinition =
       symbolDefinitionsByName.get(tagName)
       || (importedComponentPath ? symbolDefinitionsByPath.get(importedComponentPath) : undefined)
@@ -1647,8 +1639,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     } else if (isSymbolReference) {
       props.symbolName = tagName
       props.ports = resolvedSymbolDefinition?.ports.map(port => port.name)
-        || symbolComponentDefinition?.ports
-        || importedSymbolComponentDefinition?.ports
+        || symbolComponentDefinitionAny?.ports
+        || importedSymbolComponentDefinitionAny?.ports
         || []
       props.symbolPorts = resolvedSymbolDefinition?.ports.map(port => ({
         name: port.name,
@@ -1657,52 +1649,52 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         side: (port as any).side ?? undefined,
         order: (port as any).order !== undefined ? Number((port as any).order) : undefined
       }))
-        || symbolComponentDefinition?.portGeometry.map(port => ({
+        || symbolComponentDefinitionAny?.portGeometry?.map((port: any) => ({
           name: String(port.name || ''),
           schX: Number(port.schX || 0),
           schY: Number(port.schY || 0),
-          side: (port as any).side ?? undefined,
-          order: (port as any).order !== undefined ? Number((port as any).order) : undefined
+          side: port.side ?? undefined,
+          order: port.order !== undefined ? Number(port.order) : undefined
         }))
-        || importedSymbolComponentDefinition?.portGeometry.map(port => ({
+        || importedSymbolComponentDefinitionAny?.portGeometry?.map((port: any) => ({
           name: String(port.name || ''),
           schX: Number(port.schX || 0),
           schY: Number(port.schY || 0),
-          side: (port as any).side ?? undefined,
-          order: (port as any).order !== undefined ? Number((port as any).order) : undefined
+          side: port.side ?? undefined,
+          order: port.order !== undefined ? Number(port.order) : undefined
         }))
         || []
       props.symbolShapes = resolvedSymbolDefinition?.geometry?.shapes?.map(shape => ({ ...shape }))
-        || symbolComponentDefinition?.geometry?.shapes?.map(shape => ({ ...shape }))
-        || importedSymbolComponentDefinition?.geometry?.shapes?.map(shape => ({ ...shape }))
+        || symbolComponentDefinitionAny?.geometry?.shapes?.map((shape: any) => ({ ...shape }))
+        || importedSymbolComponentDefinitionAny?.geometry?.shapes?.map((shape: any) => ({ ...shape }))
         || []
       props.symbolWidth = Number(
         resolvedSymbolDefinition?.geometry?.width
-        || symbolComponentDefinition?.geometry?.width
-        || importedSymbolComponentDefinition?.geometry?.width
+        || symbolComponentDefinitionAny?.geometry?.width
+        || importedSymbolComponentDefinitionAny?.geometry?.width
         || props.symbolWidth
         || 120
       )
       props.symbolHeight = Number(
         resolvedSymbolDefinition?.geometry?.height
-        || symbolComponentDefinition?.geometry?.height
-        || importedSymbolComponentDefinition?.geometry?.height
+        || symbolComponentDefinitionAny?.geometry?.height
+        || importedSymbolComponentDefinitionAny?.geometry?.height
         || props.symbolHeight
         || 80
       )
       props.symbolOriginX = Number(
         resolvedSymbolDefinition?.geometry?.origin?.x
-        || symbolComponentDefinition?.geometry?.origin?.x
-        || importedSymbolComponentDefinition?.geometry?.origin?.x
+        || symbolComponentDefinitionAny?.geometry?.origin?.x
+        || importedSymbolComponentDefinitionAny?.geometry?.origin?.x
         || 0
       )
       props.symbolOriginY = Number(
         resolvedSymbolDefinition?.geometry?.origin?.y
-        || symbolComponentDefinition?.geometry?.origin?.y
-        || importedSymbolComponentDefinition?.geometry?.origin?.y
+        || symbolComponentDefinitionAny?.geometry?.origin?.y
+        || importedSymbolComponentDefinitionAny?.geometry?.origin?.y
         || 0
       )
-      props.subcircuitPath = importedComponentPath || resolvedSymbolDefinition?.filePath || symbolComponentDefinition?.filePath || `symbols/${tagName}.tsx`
+      props.subcircuitPath = importedComponentPath || resolvedSymbolDefinition?.filePath || symbolComponentDefinitionAny?.filePath || `symbols/${tagName}.tsx`
     } else if (!isKnownPart) {
       const ports = subcircuitDefinition?.ports
         || symbolComponentDefinition?.ports
@@ -1798,22 +1790,21 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   }
 
   const ensureNetComponent = (portName: string): string => {
-    const existing = resolveExistingNetComponent(portName)
-    if (existing) return existing
-
     const canonicalName = canonicalizeNetName(portName)
     const netId = netRegistry.registerNet(canonicalName, {
       role: inferNetRole(canonicalName),
       source: 'inferred'
     })
 
-    const componentId = `comp-${filePath}-net-${canonicalName}-${components.length}`
+    // Keep inferred net references as local anchors so named nets don't collapse
+    // into one shared geometric hub in the canvas.
+    const componentId = `comp-${filePath}-netport-${canonicalName}-${components.length}-${traceIndex}`
     const inferredNet: PlacedComponent = {
       id: componentId,
-      catalogId: 'net',
+      catalogId: 'netport',
       name: canonicalName,
       props: {
-        name: canonicalName,
+        netName: canonicalName,
         netId,
         netRole: netRegistry.getNetRole(netId) || inferNetRole(canonicalName),
         schX: 0,
@@ -1824,7 +1815,6 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     }
 
     components.push(inferredNet)
-    netEndpointByName.set(canonicalName, componentId)
     return componentId
   }
 
