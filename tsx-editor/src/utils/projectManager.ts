@@ -9,7 +9,9 @@ import {
   ProjectFile,
   SubcircuitDefinition,
   SubcircuitRegistry,
-  SymbolDefinition
+  SymbolDefinition,
+  WorkspaceComponentRegistry,
+  WorkspaceSymbolRegistry
 } from '../types/project'
 import { detectFileKind, getFolderForDetectedFileKind, inferDetectedFileKind } from './fileClassification'
 import { importSymbolTsxToDocument } from './symbolDocument'
@@ -366,6 +368,119 @@ export const buildSymbolComponentRegistry = (fsMap: FSMap): SubcircuitRegistry =
   }, {})
 }
 
+const getPathBaseName = (path: string): string => path.split('/').pop()?.replace(/\.(tsx|ts)$/i, '') || path
+
+export const buildWorkspaceSymbolRegistry = (fsMap: FSMap): WorkspaceSymbolRegistry => {
+  const out: WorkspaceSymbolRegistry = {}
+
+  extractAllSymbols(fsMap).forEach((symbol) => {
+    const symbolId = getPathBaseName(symbol.filePath)
+    out[symbolId] = {
+      ...symbol,
+      id: symbolId
+    }
+  })
+
+  return out
+}
+
+const inferFootprintFromSymbolFile = (content: string): string | undefined => {
+  const footprint = content.match(/\bfootprint\s*=\s*["']([^"']+)["']/)?.[1]
+  return footprint?.trim() || undefined
+}
+
+const normalizeRef = (value: string): string => value.trim().replace(/^\.\//, '').replace(/^symbols\//, '').replace(/\.(tsx|ts)$/i, '')
+
+const inferSymbolRefForComponent = (
+  componentType: string,
+  filePath: string,
+  explicitSymbolRef: string | undefined,
+  pins: string[],
+  symbolRegistry: WorkspaceSymbolRegistry
+): string | null => {
+  if (explicitSymbolRef) {
+    const normalized = normalizeRef(explicitSymbolRef)
+    if (symbolRegistry[normalized]) return normalized
+  }
+
+  const byFileBase = getPathBaseName(filePath)
+  if (symbolRegistry[byFileBase]) return byFileBase
+
+  const byType = normalizeRef(componentType)
+  if (symbolRegistry[byType]) return byType
+
+  const pinSet = new Set(pins.map(pin => pin.trim()).filter(Boolean))
+  if (pinSet.size > 0) {
+    const byPinMatch = Object.entries(symbolRegistry)
+      .map(([symbolId, symbol]) => ({
+        symbolId,
+        score: symbol.ports.reduce((acc, port) => acc + (pinSet.has(port.name) ? 1 : 0), 0)
+      }))
+      .sort((a, b) => b.score - a.score)[0]
+
+    if (byPinMatch && byPinMatch.score > 0) return byPinMatch.symbolId
+  }
+
+  return null
+}
+
+export const buildWorkspaceComponentRegistry = (fsMap: FSMap): WorkspaceComponentRegistry => {
+  const symbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
+  const out: WorkspaceComponentRegistry = {}
+
+  Object.values(symbolRegistry).forEach((symbol) => {
+    const symbolId = symbol.id
+    const pins = symbol.ports.map(port => port.name)
+    const source = fsMap[symbol.filePath] || ''
+    const footprint = inferFootprintFromSymbolFile(source)
+    const componentType = symbol.name
+
+    out[componentType] = {
+      componentType,
+      symbolRef: symbolId,
+      pins,
+      footprint,
+      role: 'custom-chip',
+      sourceFilePath: symbol.filePath
+    }
+  })
+
+  Object.entries(fsMap).forEach(([filePath, content]) => {
+    if (!filePath.endsWith('.tsx')) return
+
+    const exportDefaultFn = content.match(/export\s+default\s+function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1]
+    const exportFns = [...content.matchAll(/export\s+function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)].map(match => match[1])
+    const exportConsts = [...content.matchAll(/export\s+const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/g)]
+      .map(match => match[1])
+      .filter(name => name !== 'ports')
+    const componentTypes = Array.from(new Set([exportDefaultFn, ...exportFns, ...exportConsts].filter(Boolean) as string[]))
+    if (componentTypes.length === 0) return
+
+    const taggedPins = extractPortsFromSymbolComponentContent(content)
+    const explicitSymbolRef =
+      content.match(/\bsymbolRef\s*=\s*["']([^"']+)["']/)?.[1]
+      || content.match(/\bsymbolRef\s*:\s*["']([^"']+)["']/)?.[1]
+
+    componentTypes.forEach((componentType) => {
+      if (out[componentType]?.symbolRef) return
+      const inferredRef = inferSymbolRefForComponent(componentType, filePath, explicitSymbolRef, taggedPins, symbolRegistry)
+      if (!inferredRef) return
+
+      const symbol = symbolRegistry[inferredRef]
+      out[componentType] = {
+        componentType,
+        symbolRef: inferredRef,
+        pins: taggedPins.length > 0 ? taggedPins : symbol.ports.map(port => port.name),
+        footprint: inferFootprintFromSymbolFile(content),
+        role: 'custom-chip',
+        sourceFilePath: filePath
+      }
+    })
+  })
+
+  return out
+}
+
 export const buildDependencyGraph = (fsMap: FSMap): DependencyGraph => {
   const graph: DependencyGraph = {}
 
@@ -617,13 +732,13 @@ const isNonDegenerateShape = (shape: Record<string, any>): boolean => {
 
 const normalizeSymbolGeometry = (
   rawShapes: Array<Record<string, any>>,
-  rawPorts: Array<{ name: string; x: number; y: number; side?: string; order?: number }>
+  rawPorts: Array<{ name: string; x: number; y: number; side?: 'left' | 'right' | 'top' | 'bottom'; order?: number }>
 ): {
   width: number
   height: number
   origin: { x: number; y: number }
   shapes: Array<Record<string, any>>
-  ports: Array<{ name: string; x: number; y: number; side?: string; order?: number }>
+  ports: Array<{ name: string; x: number; y: number; side?: 'left' | 'right' | 'top' | 'bottom'; order?: number }>
 } => {
   const shapes = rawShapes.filter(isNonDegenerateShape)
 
@@ -732,7 +847,7 @@ export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
     )
 
     symbolComponents.push({
-      id: name,
+      id: getPathBaseName(path),
       name,
       filePath: path,
       ports: normalized.ports,

@@ -16,6 +16,8 @@ import {
   buildImportedProjectState,
   buildSubcircuitRegistry,
   buildSymbolComponentRegistry,
+  buildWorkspaceComponentRegistry,
+  buildWorkspaceSymbolRegistry,
   extractAllSymbols,
   extractPortsFromSubcircuitContent,
   resolveProjectPath,
@@ -628,11 +630,26 @@ const regenerateSubcircuitIndex = (fsMap: FSMap): FSMap => {
 }
 
 const getWorkspaceSymbolNames = (fsMap: FSMap): Set<string> => {
-  return new Set(
-    Object.keys(fsMap)
-      .filter(path => path.startsWith('symbols/') && path.endsWith('.tsx'))
-      .map(path => path.replace('symbols/', '').replace('.tsx', ''))
-  )
+  const componentRegistry = buildWorkspaceComponentRegistry(fsMap)
+  const symbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
+
+  return new Set([
+    ...Object.keys(componentRegistry),
+    ...Object.values(symbolRegistry).map(symbol => symbol.name),
+    ...Object.keys(symbolRegistry)
+  ])
+}
+
+const withWorkspaceRegistriesInMeta = (fsMap: FSMap): FSMap => {
+  const meta = loadEditorMeta(fsMap)
+  const symbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
+  const componentRegistry = buildWorkspaceComponentRegistry(fsMap)
+
+  return saveEditorMeta(fsMap, {
+    ...meta,
+    symbolRegistry,
+    componentRegistry
+  })
 }
 
 const getRelativeImportPath = (fromFilePath: string, toFilePath: string): string => {
@@ -1421,6 +1438,14 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
   const content = fsMap[filePath] || ''
   const isSchematicFile = isSchematicFilePath(filePath)
   const isSubcircuitFile = filePath.startsWith('subcircuits/')
+  const workspaceSymbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
+  const workspaceComponentRegistry = buildWorkspaceComponentRegistry(fsMap)
+  const workspaceComponentRegistryBySourcePath = new Map(
+    Object.values(workspaceComponentRegistry)
+      .filter(component => !!component.sourceFilePath)
+      .map(component => [String(component.sourceFilePath), component])
+  )
+  const normalizeSymbolRef = (ref: string): string => ref.trim().replace(/^\.?\/?symbols\//, '').replace(/\.(tsx|ts)$/i, '')
   const symbolNames = getWorkspaceSymbolNames(fsMap)
   const symbolDefinitions = extractAllSymbols(fsMap)
   const symbolDefinitionsByName = new Map(symbolDefinitions.map(symbol => [symbol.name, symbol]))
@@ -1614,7 +1639,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     const id = `comp-${filePath}-${name}-${components.length}`
 
     const importedComponentPath = importedComponentPaths.get(tagName)
+    const resolvedComponentDefinition = workspaceComponentRegistry[tagName]
+      || (importedComponentPath ? workspaceComponentRegistryBySourcePath.get(importedComponentPath) : undefined)
+    const resolvedWorkspaceSymbol = resolvedComponentDefinition?.symbolRef
+      ? workspaceSymbolRegistry[normalizeSymbolRef(resolvedComponentDefinition.symbolRef)]
+      : undefined
     const isSymbolReference = symbolNames.has(tagName)
+      || !!resolvedComponentDefinition
       || (!!importedComponentPath && symbolDefinitionsByPath.has(importedComponentPath))
     const subcircuitDefinition = subcircuitRegistry[tagName]
     const symbolComponentDefinition = symbolComponentRegistry[tagName]
@@ -1623,7 +1654,8 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     const symbolComponentDefinitionAny = symbolComponentDefinition as any
     const importedSymbolComponentDefinitionAny = importedSymbolComponentDefinition as any
     const resolvedSymbolDefinition =
-      symbolDefinitionsByName.get(tagName)
+      resolvedWorkspaceSymbol
+      || symbolDefinitionsByName.get(tagName)
       || (importedComponentPath ? symbolDefinitionsByPath.get(importedComponentPath) : undefined)
 
     if (isSheetReference) {
@@ -1637,8 +1669,11 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     } else if (isPublicPort) {
       props.publicPortName = name
     } else if (isSymbolReference) {
-      props.symbolName = tagName
-      props.ports = resolvedSymbolDefinition?.ports.map(port => port.name)
+      props.componentType = resolvedComponentDefinition?.componentType || tagName
+      props.symbolRef = resolvedComponentDefinition?.symbolRef || props.symbolRef
+      props.symbolName = resolvedComponentDefinition?.componentType || tagName
+      props.ports = resolvedComponentDefinition?.pins
+        || resolvedSymbolDefinition?.ports.map(port => port.name)
         || symbolComponentDefinitionAny?.ports
         || importedSymbolComponentDefinitionAny?.ports
         || []
@@ -1694,7 +1729,11 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
         || importedSymbolComponentDefinitionAny?.geometry?.origin?.y
         || 0
       )
-      props.subcircuitPath = importedComponentPath || resolvedSymbolDefinition?.filePath || symbolComponentDefinitionAny?.filePath || `symbols/${tagName}.tsx`
+      props.subcircuitPath = resolvedComponentDefinition?.sourceFilePath
+        || importedComponentPath
+        || resolvedSymbolDefinition?.filePath
+        || symbolComponentDefinitionAny?.filePath
+        || `symbols/${tagName}.tsx`
     } else if (!isKnownPart) {
       const ports = subcircuitDefinition?.ports
         || symbolComponentDefinition?.ports
@@ -2018,7 +2057,7 @@ const getCanvasStateForFile = (filePath: string, fsMap: FSMap): { components: Pl
 
 const syncActiveCanvasFile = (state: Pick<EditorState, 'activeFilePath' | 'fsMap' | 'placedComponents' | 'wires'>): FSMap => {
   if (!isCanvasEditableFilePath(state.activeFilePath)) {
-    return regenerateSubcircuitIndex({ ...state.fsMap })
+    return withWorkspaceRegistriesInMeta(regenerateSubcircuitIndex({ ...state.fsMap }))
   }
 
   const currentContent = generateFileTSX(state.activeFilePath, state.placedComponents, state.wires)
@@ -2027,7 +2066,9 @@ const syncActiveCanvasFile = (state: Pick<EditorState, 'activeFilePath' | 'fsMap
     [state.activeFilePath]: currentContent
   })
 
-  return writePersistedCanvasGraphState(withSource, state.activeFilePath, state.placedComponents, state.wires)
+  return withWorkspaceRegistriesInMeta(
+    writePersistedCanvasGraphState(withSource, state.activeFilePath, state.placedComponents, state.wires)
+  )
 }
 
 const buildPersistedCanvasState = (
@@ -2042,7 +2083,7 @@ const buildPersistedCanvasState = (
 
   const fsMap = isCanvasEditableFilePath(activeFilePath)
     ? syncActiveCanvasFile({ activeFilePath, fsMap: fsMapBase, placedComponents, wires })
-    : regenerateSubcircuitIndex({ ...fsMapBase })
+    : withWorkspaceRegistriesInMeta(regenerateSubcircuitIndex({ ...fsMapBase }))
 
   const workspaces = {
     ...state.workspaces,
@@ -2278,6 +2319,8 @@ const toAttrList = (props: Record<string, any>): string[] => {
       'schRotation',
       'subcircuitName',
       'subcircuitPath',
+      'componentType',
+      'symbolRef',
       'sheetName',
       'sheetPath',
       'src',

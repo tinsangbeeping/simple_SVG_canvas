@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react'
 import { getAllCatalogItems } from '../catalog'
 import { CatalogItem } from '../types/catalog'
 import { useEditorStore } from '../store/editorStore'
-import { extractAllSubcircuits, extractAllSymbols } from '../utils/projectManager'
+import { buildWorkspaceComponentRegistry, buildWorkspaceSymbolRegistry, extractAllSubcircuits, extractAllSymbols } from '../utils/projectManager'
 
 interface CatalogPanelProps {
   onDragStart: (item: CatalogItem) => void
@@ -57,6 +57,12 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
 
   const symbolComponents = extractAllSymbols(fsMap)
     .filter(symbol => !searchQuery || symbol.name.toLowerCase().includes(searchQuery.toLowerCase()))
+
+  const workspaceSymbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
+  const workspaceComponentRegistry = buildWorkspaceComponentRegistry(fsMap)
+  const customChipComponents = Object.values(workspaceComponentRegistry)
+    .filter(component => component.role === 'custom-chip')
+    .filter(component => !searchQuery || component.componentType.toLowerCase().includes(searchQuery.toLowerCase()))
 
   const realComponentItems = filteredParts.filter(item => realComponentIds.has(item.metadata.id))
   const connectivityItems = filteredParts.filter(item => connectivityToolIds.has(item.metadata.id))
@@ -121,6 +127,41 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
       emitTSX: (props) => `<${symbolName} name="${symbolName}1" schX={${props.schX}} schY={${props.schY}} />`
     }
     onDragStart(symbolItem)
+  }
+
+  const handleWorkspaceComponentDragStart = (
+    e: React.DragEvent,
+    componentType: string
+  ) => {
+    const componentDef = workspaceComponentRegistry[componentType]
+    if (!componentDef) return
+    const symbol = workspaceSymbolRegistry[componentDef.symbolRef]
+
+    e.dataTransfer.setData('workspaceComponentType', componentDef.componentType)
+    e.dataTransfer.setData('workspaceComponentSymbolRef', componentDef.symbolRef)
+    e.dataTransfer.setData('workspaceComponentPins', JSON.stringify(componentDef.pins || []))
+    if (componentDef.sourceFilePath) {
+      e.dataTransfer.setData('workspaceComponentSourcePath', componentDef.sourceFilePath)
+    }
+    if (symbol) {
+      e.dataTransfer.setData('workspaceComponentPortGeometry', JSON.stringify(symbol.ports || []))
+      if (symbol.geometry) {
+        e.dataTransfer.setData('workspaceComponentGeometry', JSON.stringify(symbol.geometry))
+      }
+    }
+
+    const item: CatalogItem = {
+      metadata: {
+        id: componentDef.componentType,
+        label: componentDef.componentType,
+        kind: 'part',
+        category: 'Custom Chips',
+        editablePropsSchema: {},
+        defaultProps: { name: 'U1' }
+      },
+      emitTSX: (props) => `<${componentDef.componentType} name="${props.name || 'U1'}" schX={${props.schX}} schY={${props.schY}} />`
+    }
+    onDragStart(item)
   }
 
   const getDisplayLabel = (item: CatalogItem): string => {
@@ -272,6 +313,28 @@ export const CatalogPanel: React.FC<CatalogPanelProps> = ({ onDragStart, embedde
 
             {symbolComponents.length > 0 && (
               <>
+                {customChipComponents.length > 0 && (
+                  <>
+                    <div style={{ padding: '6px 4px 10px', color: '#888', fontSize: 11, fontWeight: 600 }}>
+                      Custom Chip Components
+                    </div>
+                    {customChipComponents.map(component => (
+                      <div
+                        key={`custom-chip-${component.componentType}`}
+                        className="catalog-item"
+                        draggable
+                        onDragStart={(e) => handleWorkspaceComponentDragStart(e, component.componentType)}
+                        title="Drag onto canvas to place custom chip component"
+                      >
+                        <div className="catalog-item-label">{component.componentType}</div>
+                        <div className="catalog-item-desc">
+                          {`symbolRef: ${component.symbolRef} | pins: ${component.pins.length}`}
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+
                 <div style={{ padding: '6px 4px 10px', color: '#888', fontSize: 11, fontWeight: 600 }}>
                   Custom Symbol Components
                 </div>

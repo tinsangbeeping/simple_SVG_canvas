@@ -4,7 +4,7 @@ import { PlacedComponent } from '../types/catalog'
 import { getCatalogItem } from '../catalog'
 import { SchematicSymbol } from './SchematicSymbol'
 import { getPinConfig } from '../types/schematic'
-import { extractAllSubcircuits, extractAllSymbols } from '../utils/projectManager'
+import { buildWorkspaceComponentRegistry, buildWorkspaceSymbolRegistry, extractAllSubcircuits, extractAllSymbols } from '../utils/projectManager'
 
 export const Canvas: React.FC = () => {
     const renderSymbolGeometry = (component: PlacedComponent, selected: boolean) => {
@@ -138,12 +138,24 @@ export const Canvas: React.FC = () => {
 
   const symbolRegistryByName = useMemo(() => {
     const map = new Map<string, ReturnType<typeof extractAllSymbols>[number]>()
+    const normalizeRef = (value: string) => value.trim().replace(/^\.?\/?symbols\//, '').replace(/\.(tsx|ts)$/i, '')
+    const workspaceSymbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
     extractAllSymbols(fsMap).forEach((symbol) => {
       map.set(symbol.name, symbol)
       map.set(symbol.filePath, symbol)
+      map.set(symbol.id, symbol)
+      map.set(normalizeRef(symbol.filePath), symbol)
+    })
+    Object.values(workspaceSymbolRegistry).forEach((symbol) => {
+      map.set(symbol.id, symbol)
+      map.set(symbol.name, symbol)
+      map.set(symbol.filePath, symbol)
+      map.set(normalizeRef(symbol.filePath), symbol)
     })
     return map
   }, [fsMap])
+
+  const workspaceComponentRegistry = useMemo(() => buildWorkspaceComponentRegistry(fsMap), [fsMap])
 
   const shiftSymbolShape = (shape: any, dx: number, dy: number): any => {
     if (!shape || (dx === 0 && dy === 0)) return shape
@@ -194,9 +206,16 @@ export const Canvas: React.FC = () => {
     ports: Array<{ name: string; schX: number; schY: number; side?: string; order?: number }>
     shapes: Array<any>
   } => {
+    const normalizeRef = (value: string) => value.trim().replace(/^\.?\/?symbols\//, '').replace(/\.(tsx|ts)$/i, '')
+    const componentType = String(component.props.componentType || component.props.symbolName || '').trim()
+    const componentDef = componentType ? workspaceComponentRegistry[componentType] : undefined
+    const symbolRef = String(component.props.symbolRef || componentDef?.symbolRef || '').trim()
     const symbolName = String(component.props.symbolName || '').trim()
     const symbolPath = String(component.props.subcircuitPath || '').trim()
-    const resolved = symbolRegistryByName.get(symbolName) || symbolRegistryByName.get(symbolPath)
+    const resolved =
+      (symbolRef ? symbolRegistryByName.get(normalizeRef(symbolRef)) : undefined)
+      || symbolRegistryByName.get(symbolName)
+      || symbolRegistryByName.get(symbolPath)
 
     const localPorts = Array.isArray(component.props.symbolPorts)
       ? (component.props.symbolPorts as Array<{ name: string; schX?: number; schY?: number; x?: number; y?: number; side?: string; order?: number }>)
@@ -294,6 +313,8 @@ export const Canvas: React.FC = () => {
   const isCustomSymbolComponent = (component: PlacedComponent): boolean => {
     if (component.catalogId === 'symbol-instance') return true
     if (Array.isArray(component.props.symbolShapes) || Array.isArray(component.props.symbolPorts)) return true
+    if (String(component.props.symbolRef || '').trim().length > 0) return true
+    if (String(component.props.componentType || '').trim().length > 0) return true
     const symbolPath = String(component.props.subcircuitPath || '').trim()
     if (symbolPath.startsWith('symbols/')) return true
     const symbolName = String(component.props.symbolName || '').trim()
@@ -761,6 +782,12 @@ export const Canvas: React.FC = () => {
     const symbolComponentPorts = e.dataTransfer.getData('symbolComponentPorts')
     const symbolComponentPortGeometry = e.dataTransfer.getData('symbolComponentPortGeometry')
     const symbolComponentGeometry = e.dataTransfer.getData('symbolComponentGeometry')
+    const workspaceComponentType = e.dataTransfer.getData('workspaceComponentType')
+    const workspaceComponentSymbolRef = e.dataTransfer.getData('workspaceComponentSymbolRef')
+    const workspaceComponentSourcePath = e.dataTransfer.getData('workspaceComponentSourcePath')
+    const workspaceComponentPins = e.dataTransfer.getData('workspaceComponentPins')
+    const workspaceComponentPortGeometry = e.dataTransfer.getData('workspaceComponentPortGeometry')
+    const workspaceComponentGeometry = e.dataTransfer.getData('workspaceComponentGeometry')
     
     if (!canvasRef.current) return
 
@@ -801,6 +828,51 @@ export const Canvas: React.FC = () => {
           schY: y
         },
         tsxSnippet: ''
+      })
+      return
+    }
+
+    if (workspaceComponentType) {
+      const existingNames = placedComponents.map(c => c.name)
+      let i = 1
+      let uniqueName = `U${i}`
+      while (existingNames.includes(uniqueName)) {
+        i += 1
+        uniqueName = `U${i}`
+      }
+
+      const pins = workspaceComponentPins ? JSON.parse(workspaceComponentPins) : []
+      const portGeometry = workspaceComponentPortGeometry ? JSON.parse(workspaceComponentPortGeometry) : []
+      const geometry = workspaceComponentGeometry ? JSON.parse(workspaceComponentGeometry) : null
+
+      addPlacedComponent({
+        id: `wcomp-${Date.now()}-${Math.random()}`,
+        catalogId: 'symbol-instance',
+        name: uniqueName,
+        props: {
+          componentType: workspaceComponentType,
+          symbolRef: workspaceComponentSymbolRef || undefined,
+          symbolName: workspaceComponentType,
+          subcircuitPath: workspaceComponentSourcePath || undefined,
+          ports: Array.isArray(pins) ? pins.map(String) : [],
+          symbolPorts: Array.isArray(portGeometry)
+            ? portGeometry.map((port: any) => ({
+                name: String(port.name || ''),
+                schX: Number(port.schX ?? port.x ?? 0),
+                schY: Number(port.schY ?? port.y ?? 0),
+                side: port.side ?? undefined,
+                order: port.order !== undefined ? Number(port.order) : undefined
+              }))
+            : [],
+          symbolShapes: geometry?.shapes || [],
+          symbolWidth: Number(geometry?.width || 120),
+          symbolHeight: Number(geometry?.height || 80),
+          symbolOriginX: Number(geometry?.origin?.x || 0),
+          symbolOriginY: Number(geometry?.origin?.y || 0),
+          schX: x,
+          schY: y
+        },
+        tsxSnippet: `<${workspaceComponentType} name="${uniqueName}" schX={${x}} schY={${y}} />`
       })
       return
     }
