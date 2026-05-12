@@ -176,7 +176,7 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
     if (toolMode === 'port') {
       const name = window.prompt('Port name:', 'P1')?.trim()
       if (!name) return
-      const direction = (window.prompt('Direction (input/output/inout/passive):', 'passive') || 'passive').trim().toLowerCase()
+      const direction = (window.prompt('Electrical direction (input/output/inout/passive):', 'passive') || 'passive').trim().toLowerCase()
       const normalizedDirection = ['input', 'output', 'inout', 'passive'].includes(direction) ? direction as 'input' | 'output' | 'inout' | 'passive' : 'passive'
 
       // Infer which side of the symbol boundary this port belongs to,
@@ -201,7 +201,7 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         ports: [...document.ports, {
           id: nextShapeId('port'),
           name,
-          direction: normalizedDirection,
+          electricalDirection: normalizedDirection,
           side: inferredSide,
           order: existingSideOrder,
           schX: point.x,

@@ -2551,7 +2551,6 @@ const createGraphExportArtifacts = (
     })
   })
 
-  const labelsByNet = new Map<string, Array<{ x: number; y: number; explicit: boolean }>>()
   components
     .filter(component => component.catalogId === 'netlabel')
     .filter(component => component.props.internalHelper !== true)
@@ -2559,26 +2558,14 @@ const createGraphExportArtifacts = (
       const rawNet = String(component.props.net || component.props.netName || component.name || '').trim()
       if (!rawNet) return
       const net = canonicalizeNetName(rawNet)
-      const x = Number(component.props.schX || 0)
-      const y = Number(component.props.schY || 0)
-      const explicit = component.props.layoutLocked === true
-      const bucket = labelsByNet.get(net) || []
-      bucket.push({ x, y, explicit })
-      labelsByNet.set(net, bucket)
+      exportGraph.nodes.push({
+        kind: 'netlabel',
+        net,
+        schX: Number(component.props.schX),
+        schY: Number(component.props.schY),
+        netRole: String(component.props.netRole || inferNetRole(net))
+      })
     })
-
-  labelsByNet.forEach((labels, net) => {
-    const explicitLabels = labels.filter(label => label.explicit)
-    if (explicitLabels.length > 0) {
-      exportGraph.nodes.push({ kind: 'netlabel', net })
-      return
-    }
-
-    // If there are only default/unpositioned labels, emit at most one explicit netlabel.
-    if (labels.length > 0) {
-      exportGraph.nodes.push({ kind: 'netlabel', net })
-    }
-  })
 
   compileExportGraphToTSXNodes(exportGraph).forEach(snippet => traceSet.add(snippet))
 

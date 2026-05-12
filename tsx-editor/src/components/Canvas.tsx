@@ -253,7 +253,7 @@ export const Canvas: React.FC = () => {
       x: Number.isFinite(localOriginX) ? localOriginX : Number(resolvedOrigin?.x || 0),
       y: Number.isFinite(localOriginY) ? localOriginY : Number(resolvedOrigin?.y || 0)
     }
-    const ports = normalizedLocalPorts.length > 0 ? normalizedLocalPorts : resolvedPorts
+    const ports = resolvedPorts.length > 0 ? resolvedPorts : normalizedLocalPorts
     const shapes = localShapes.length > 0 ? localShapes : resolvedShapes
 
     const points: Array<{ x: number; y: number }> = []
@@ -393,28 +393,27 @@ export const Canvas: React.FC = () => {
     if (isCustomSymbolComponent(component)) {
       const resolved = getResolvedSymbolData(component)
       const symbolPorts = resolved.ports
+      const hasSymbolLink =
+        String(component.props.symbolRef || '').trim().length > 0
+        || String(component.props.componentType || '').trim().length > 0
+        || String(component.props.symbolName || '').trim().length > 0
+        || Array.isArray(component.props.symbolPorts)
+        || Array.isArray(component.props.symbolShapes)
       if (symbolPorts.length > 0) {
-        const toFinite = (value: unknown, fallback: number) => {
-          const parsed = Number(value)
-          return Number.isFinite(parsed) ? parsed : fallback
-        }
         const validSide = (side: unknown): 'left' | 'right' | 'top' | 'bottom' | undefined => {
           if (side === 'left' || side === 'right' || side === 'top' || side === 'bottom') return side
           return undefined
         }
-        const sideRank = (side: 'left' | 'right' | 'top' | 'bottom' | undefined) => {
-          if (side === 'left') return 0
-          if (side === 'right') return 1
-          if (side === 'top') return 2
-          if (side === 'bottom') return 3
-          return 4
-        }
-
-        // Preserve actual Symbol Maker coordinates; side/order only controls per-side ordering.
         const normalized = symbolPorts
           .filter(port => String(port.name || '').trim().length > 0)
           .map((port, index) => {
-            const side = validSide(port.side)
+            const fallbackSide = (() => {
+              const x = Number(port.schX)
+              const y = Number(port.schY)
+              if (Math.abs(x) >= Math.abs(y)) return x >= resolved.width / 2 ? 'right' : 'left'
+              return y >= resolved.height / 2 ? 'bottom' : 'top'
+            })()
+            const side = validSide(port.side) || fallbackSide
             const rawX = Number(port.schX)
             const rawY = Number(port.schY)
             const x = Number.isFinite(rawX) ? rawX : NaN
@@ -432,18 +431,22 @@ export const Canvas: React.FC = () => {
           })
 
         const sorted = [...normalized].sort((a, b) => {
-          const sideDelta = sideRank(a.side) - sideRank(b.side)
+          const rank = (side: 'left' | 'right' | 'top' | 'bottom') => {
+            if (side === 'left') return 0
+            if (side === 'right') return 1
+            if (side === 'top') return 2
+            return 3
+          }
+          const sideDelta = rank(a.side) - rank(b.side)
           if (sideDelta !== 0) return sideDelta
 
-          // Explicit order wins within the same side.
           if (a.order !== undefined && b.order !== undefined && a.order !== b.order) {
             return a.order - b.order
           }
 
-          // Fallback to geometric ordering by side axis.
           if (a.side === 'left' || a.side === 'right') {
             if (Number.isFinite(a.y) && Number.isFinite(b.y) && a.y !== b.y) return a.y - b.y
-          } else if (a.side === 'top' || a.side === 'bottom') {
+          } else {
             if (Number.isFinite(a.x) && Number.isFinite(b.x) && a.x !== b.x) return a.x - b.x
           }
 
@@ -457,37 +460,8 @@ export const Canvas: React.FC = () => {
           bottom: []
         }
         sorted.forEach((port, index) => {
-          if (port.side) sideMembers[port.side].push(index)
+          sideMembers[port.side].push(index)
         })
-
-        const sideAxisDistinctCount = {
-          left: new Set<number>(),
-          right: new Set<number>(),
-          top: new Set<number>(),
-          bottom: new Set<number>()
-        }
-        sorted.forEach((port) => {
-          if (!port.side) return
-          if ((port.side === 'left' || port.side === 'right') && Number.isFinite(port.y)) {
-            sideAxisDistinctCount[port.side].add(Math.round(port.y * 1000) / 1000)
-          }
-          if ((port.side === 'top' || port.side === 'bottom') && Number.isFinite(port.x)) {
-            sideAxisDistinctCount[port.side].add(Math.round(port.x * 1000) / 1000)
-          }
-        })
-
-        const unknownMembers = sorted
-          .map((port, index) => ({ port, index }))
-          .filter(entry => !entry.port.side)
-          .map(entry => entry.index)
-        const unknownDistinctPoints = new Set(
-          unknownMembers.map((idx) => {
-            const p = sorted[idx]
-            const x = Number.isFinite(p.x) ? Math.round(p.x * 1000) / 1000 : NaN
-            const y = Number.isFinite(p.y) ? Math.round(p.y * 1000) / 1000 : NaN
-            return `${x},${y}`
-          })
-        )
 
         const distributedCoord = (
           members: number[],
@@ -503,34 +477,18 @@ export const Canvas: React.FC = () => {
           let x = Number(port.x)
           let y = Number(port.y)
 
-          if (port.side === 'left' || port.side === 'right') {
-            // Side-constrained pins: keep explicit y if provided, otherwise distribute vertically.
-            if (!Number.isFinite(x)) x = port.side === 'right' ? resolved.width : 0
-            const axisDegenerate = sideAxisDistinctCount[port.side].size <= 1 && sideMembers[port.side].length > 1
-            if (!Number.isFinite(y) || axisDegenerate) {
-              y = distributedCoord(sideMembers[port.side], index, resolved.height)
-            }
-          } else if (port.side === 'top' || port.side === 'bottom') {
-            // Side-constrained pins: keep explicit x if provided, otherwise distribute horizontally.
-            const axisDegenerate = sideAxisDistinctCount[port.side].size <= 1 && sideMembers[port.side].length > 1
-            if (!Number.isFinite(x) || axisDegenerate) {
-              x = distributedCoord(sideMembers[port.side], index, resolved.width)
-            }
-            if (!Number.isFinite(y)) y = port.side === 'bottom' ? resolved.height : 0
+          if (port.side === 'left') {
+            x = 0
+            if (!Number.isFinite(y)) y = distributedCoord(sideMembers.left, index, resolved.height)
+          } else if (port.side === 'right') {
+            x = resolved.width
+            if (!Number.isFinite(y)) y = distributedCoord(sideMembers.right, index, resolved.height)
+          } else if (port.side === 'top') {
+            y = 0
+            if (!Number.isFinite(x)) x = distributedCoord(sideMembers.top, index, resolved.width)
           } else {
-            // Unknown side: if geometry is degenerate, fall back to legacy distributed
-            // left/right layout to avoid one-point overlap.
-            const unknownDegenerate = unknownMembers.length > 1 && unknownDistinctPoints.size <= 1
-            if (unknownDegenerate) {
-              const rank = unknownMembers.indexOf(index)
-              const row = Math.floor(rank / 2)
-              const isLeft = rank % 2 === 0
-              x = isLeft ? 0 : resolved.width
-              y = 18 + row * 18
-            } else {
-              x = toFinite(x, resolved.width / 2)
-              y = toFinite(y, resolved.height / 2)
-            }
+            y = resolved.height
+            if (!Number.isFinite(x)) x = distributedCoord(sideMembers.bottom, index, resolved.width)
           }
 
           return {
@@ -540,6 +498,8 @@ export const Canvas: React.FC = () => {
           }
         })
       }
+
+      if (hasSymbolLink) return []
 
       const ports = ((component.props.ports as string[] | undefined) || []).map(String)
       const width = resolved.width

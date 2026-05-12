@@ -1,4 +1,4 @@
-import { SymbolDocument, SymbolPort, SymbolPortDirection, SymbolPortSide, SymbolSelection, SymbolShape } from '../types/symbolDocument'
+import { ElectricalDirection, SymbolDocument, SymbolPort, SymbolPortSide, SymbolSelection, SymbolShape, TscircuitPortDirection } from '../types/symbolDocument'
 
 const SYMBOL_EDITOR_PREFIX = 'symbols/.editor/'
 const SYMBOL_EDITOR_SUFFIX = '.symbol.json'
@@ -111,9 +111,16 @@ const symbolShapeToTsx = (shape: SymbolShape): string => {
 }
 
 const symbolPortToTsx = (port: SymbolPort): string => {
-  const sidePart = port.side ? ` side="${port.side}"` : ''
+  const sideToTscDirection: Record<SymbolPortSide, TscircuitPortDirection> = {
+    left: 'left',
+    right: 'right',
+    top: 'up',
+    bottom: 'down'
+  }
+  const sidePart = ` side="${port.side}"`
   const orderPart = port.order !== undefined ? ` order={${port.order}}` : ''
-  return `<port name="${escapeStringLiteral(port.name)}" direction="${port.direction}"${sidePart}${orderPart} schX={${toTsxNumber(port.schX)}} schY={${toTsxNumber(port.schY)}} />`
+  const direction = sideToTscDirection[port.side]
+  return `<port name="${escapeStringLiteral(port.name)}" direction="${direction}"${sidePart}${orderPart} schX={${toTsxNumber(port.schX)}} schY={${toTsxNumber(port.schY)}} />`
 }
 
 const toSafeComponentIdentifier = (raw: string): string => {
@@ -133,7 +140,7 @@ export const generateSymbolTsx = (document: SymbolDocument): string => {
     ? rows.map(row => `          ${row}`).join('\n')
     : '          {/* Empty symbol */}'
 
-  return `export default function ${fnName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <chip\n      name={props.name}\n      schX={props.schX}\n      schY={props.schY}\n      footprint=\"none\"\n      symbol={\n        <symbol>\n${body}\n        </symbol>\n      }\n    />\n  )\n}\n`
+  return `export default function ${fnName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <chip\n      name={props.name}\n      schX={props.schX}\n      schY={props.schY}\n      symbol={\n        <symbol>\n${body}\n        </symbol>\n      }\n    />\n  )\n}\n`
 }
 
 const parseNumericProp = (tag: string, propName: string): { value: number | null; dynamic: boolean } => {
@@ -291,7 +298,7 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
     const schY = parseNumericProp(tag, 'schY')
     if (name.value !== null) {
       const rawDirection = String(direction.value || 'passive').toLowerCase()
-      const validDirections: SymbolPortDirection[] = ['input', 'output', 'inout', 'passive']
+        const validElectricalDirections: ElectricalDirection[] = ['input', 'output', 'inout', 'passive']
       const directionAsSide: Record<string, SymbolPortSide> = {
         left: 'left',
         right: 'right',
@@ -300,19 +307,24 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
         up: 'top',
         down: 'bottom'
       }
-      const parsedDirection = validDirections.includes(rawDirection as SymbolPortDirection)
-        ? (rawDirection as SymbolPortDirection)
-        : 'passive'
+        const parsedElectricalDirection = validElectricalDirections.includes(rawDirection as ElectricalDirection)
+          ? (rawDirection as ElectricalDirection)
+          : undefined
       const sideValue = String(side.value || '').toLowerCase()
-      const parsedSide = ((): SymbolPortSide | undefined => {
+        const parsedSide = ((): SymbolPortSide => {
         if (sideValue in directionAsSide) return directionAsSide[sideValue]
         if (rawDirection in directionAsSide) return directionAsSide[rawDirection]
-        return undefined
+          const x = schX.value !== null ? schX.value : 0
+          const y = schY.value !== null ? schY.value : 0
+          const absX = Math.abs(x)
+          const absY = Math.abs(y)
+          if (absX >= absY) return x >= 0 ? 'right' : 'left'
+          return y >= 0 ? 'bottom' : 'top'
       })()
       document.ports.push({
         id: nextImportedId('port'),
         name: name.value,
-        direction: parsedDirection,
+          electricalDirection: parsedElectricalDirection,
         side: parsedSide,
         order: order.value !== null ? order.value : undefined,
         schX: schX.value !== null ? schX.value : 0,

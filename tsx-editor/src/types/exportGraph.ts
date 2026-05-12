@@ -9,6 +9,9 @@ export type ExportTrace = {
 export type ExportNetLabel = {
   kind: 'netlabel'
   net: string
+  schX?: number
+  schY?: number
+  netRole?: string
 }
 
 export type ExportGraphNode = ExportTrace | ExportNetLabel

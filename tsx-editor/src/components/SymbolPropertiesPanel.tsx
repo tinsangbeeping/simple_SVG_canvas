@@ -1,5 +1,5 @@
 import React from 'react'
-import { SymbolDocument, SymbolPortDirection, SymbolSelection, SymbolShape } from '../types/symbolDocument'
+import { ElectricalDirection, SymbolDocument, SymbolSelection, SymbolShape } from '../types/symbolDocument'
 
 interface SymbolPropertiesPanelProps {
   document: SymbolDocument
@@ -21,7 +21,7 @@ const updateShape = (document: SymbolDocument, shapeId: string, updater: (shape:
   }
 }
 
-const directions: SymbolPortDirection[] = ['input', 'output', 'inout', 'passive']
+const electricalDirections: ElectricalDirection[] = ['input', 'output', 'inout', 'passive']
 
 export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
   document,
@@ -186,10 +186,10 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
           <div style={{ borderTop: '1px solid #3e3e3e', paddingTop: 10, display: 'grid', gap: 8 }}>
             <input value={selectedPort.name} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, name: e.target.value } : port) })} />
             <select
-              value={selectedPort.direction}
-              onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, direction: e.target.value as SymbolPortDirection } : port) })}
+              value={selectedPort.electricalDirection || 'passive'}
+              onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, electricalDirection: e.target.value as ElectricalDirection } : port) })}
             >
-              {directions.map(direction => <option key={direction} value={direction}>{direction}</option>)}
+              {electricalDirections.map(direction => <option key={direction} value={direction}>{direction}</option>)}
             </select>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <input type="number" value={selectedPort.schX} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, schX: toNumber(e.target.value, selectedPort.schX) } : port) })} />

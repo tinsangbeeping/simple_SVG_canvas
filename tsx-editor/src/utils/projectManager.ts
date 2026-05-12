@@ -836,6 +836,7 @@ export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
           name: port.name,
           x: toFiniteNumber(port.schX),
           y: toFiniteNumber(port.schY),
+          electricalDirection: port.electricalDirection,
           side: port.side,
           order: port.order
         }))
