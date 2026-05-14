@@ -17,8 +17,7 @@ export interface SchematicLineShape extends SymbolShapeBase {
 
 export interface SchematicRectShape extends SymbolShapeBase {
   kind: 'schematicrect'
-  schX: number
-  schY: number
+  center: { x: number; y: number }
   width: number
   height: number
 }

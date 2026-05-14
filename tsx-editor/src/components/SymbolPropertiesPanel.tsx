@@ -134,8 +134,8 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
 
             {selectedShape.kind === 'schematicrect' && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <input type="number" value={selectedShape.schX} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, schX: toNumber(e.target.value, selectedShape.schX) })))} />
-                <input type="number" value={selectedShape.schY} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, schY: toNumber(e.target.value, selectedShape.schY) })))} />
+                <input type="number" value={selectedShape.center.x} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, center: { ...selectedShape.center, x: toNumber(e.target.value, selectedShape.center.x) } })))} />
+                <input type="number" value={selectedShape.center.y} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, center: { ...selectedShape.center, y: toNumber(e.target.value, selectedShape.center.y) } })))} />
                 <input type="number" value={selectedShape.width} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, width: Math.max(1, toNumber(e.target.value, selectedShape.width)) })))} />
                 <input type="number" value={selectedShape.height} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, height: Math.max(1, toNumber(e.target.value, selectedShape.height)) })))} />
               </div>

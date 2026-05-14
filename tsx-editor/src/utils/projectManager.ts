@@ -389,7 +389,17 @@ const inferFootprintFromSymbolFile = (content: string): string | undefined => {
   return footprint?.trim() || undefined
 }
 
-const normalizeRef = (value: string): string => value.trim().replace(/^\.\//, '').replace(/^symbols\//, '').replace(/\.(tsx|ts)$/i, '')
+const normalizeRef = (value: string): string => {
+  return String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+    .replace(/^symbols\/(?:\.editor|editor)\//, '')
+    .replace(/^symbols\//, '')
+    .replace(/\.symbol\.json$/i, '')
+    .replace(/\.(tsx|ts)$/i, '')
+}
 
 const inferSymbolRefForComponent = (
   componentType: string,
@@ -659,10 +669,12 @@ const shapeBounds = (shape: Record<string, any>): { minX: number; minY: number; 
   }
 
   if (shape.kind === 'schematicrect') {
-    const x = toFiniteNumber(shape.schX)
-    const y = toFiniteNumber(shape.schY)
     const width = Math.abs(toFiniteNumber(shape.width))
     const height = Math.abs(toFiniteNumber(shape.height))
+    const centerX = shape.center ? toFiniteNumber(shape.center.x) : toFiniteNumber(shape.schX)
+    const centerY = shape.center ? toFiniteNumber(shape.center.y) : toFiniteNumber(shape.schY)
+    const x = centerX - width / 2
+    const y = centerY - height / 2
     return {
       minX: x,
       minY: y,
@@ -770,12 +782,18 @@ const normalizeSymbolGeometry = (
     }
 
     if (shape.kind === 'schematicrect') {
+      const width = Math.abs(toFiniteNumber(shape.width))
+      const height = Math.abs(toFiniteNumber(shape.height))
+      const centerX = shape.center ? toFiniteNumber(shape.center.x) : toFiniteNumber(shape.schX)
+      const centerY = shape.center ? toFiniteNumber(shape.center.y) : toFiniteNumber(shape.schY)
       return {
         ...shape,
-        schX: normalizeX(shape.schX),
-        schY: normalizeY(shape.schY),
-        width: Math.abs(toFiniteNumber(shape.width)),
-        height: Math.abs(toFiniteNumber(shape.height))
+        center: {
+          x: normalizeX(centerX),
+          y: normalizeY(centerY)
+        },
+        width,
+        height
       }
     }
 

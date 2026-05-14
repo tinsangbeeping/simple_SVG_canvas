@@ -1445,7 +1445,17 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       .filter(component => !!component.sourceFilePath)
       .map(component => [String(component.sourceFilePath), component])
   )
-  const normalizeSymbolRef = (ref: string): string => ref.trim().replace(/^\.?\/?symbols\//, '').replace(/\.(tsx|ts)$/i, '')
+  const normalizeSymbolRef = (ref: string): string => {
+    return String(ref || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\.?\//, '')
+      .replace(/^\/+/, '')
+      .replace(/^symbols\/(?:\.editor|editor)\//, '')
+      .replace(/^symbols\//, '')
+      .replace(/\.symbol\.json$/i, '')
+      .replace(/\.(tsx|ts)$/i, '')
+  }
   const symbolNames = getWorkspaceSymbolNames(fsMap)
   const symbolDefinitions = extractAllSymbols(fsMap)
   const symbolDefinitionsByName = new Map(symbolDefinitions.map(symbol => [symbol.name, symbol]))
@@ -1669,8 +1679,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     } else if (isPublicPort) {
       props.publicPortName = name
     } else if (isSymbolReference) {
+      const stableSymbolRef =
+        resolvedSymbolDefinition?.id
+        || normalizeSymbolRef(String(resolvedComponentDefinition?.symbolRef || ''))
+        || normalizeSymbolRef(String(props.symbolRef || ''))
+
       props.componentType = resolvedComponentDefinition?.componentType || tagName
-      props.symbolRef = resolvedComponentDefinition?.symbolRef || props.symbolRef
+      props.symbolRef = stableSymbolRef || undefined
       props.symbolName = resolvedComponentDefinition?.componentType || tagName
       props.ports = resolvedComponentDefinition?.pins
         || resolvedSymbolDefinition?.ports.map(port => port.name)

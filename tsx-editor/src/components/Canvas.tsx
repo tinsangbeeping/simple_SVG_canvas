@@ -4,99 +4,162 @@ import { PlacedComponent } from '../types/catalog'
 import { getCatalogItem } from '../catalog'
 import { SchematicSymbol } from './SchematicSymbol'
 import { getPinConfig } from '../types/schematic'
+import { SymbolDefinition } from '../types/project'
 import { buildWorkspaceComponentRegistry, buildWorkspaceSymbolRegistry, extractAllSubcircuits, extractAllSymbols } from '../utils/projectManager'
 
-export const Canvas: React.FC = () => {
-    const renderSymbolGeometry = (component: PlacedComponent, selected: boolean) => {
-      const resolved = getResolvedSymbolData(component)
-      const symbolShapes = resolved.shapes
-      const symbolWidth = resolved.width
-      const symbolHeight = resolved.height
-      const strokeColor = selected ? '#007acc' : '#4CAF50'
+const normalizeSymbolRef = (value: string): string => {
+  const trimmed = String(value || '').trim().replace(/\\/g, '/')
+  if (!trimmed) return ''
 
-      if (symbolShapes.length === 0) {
-        return (
-          <div style={{
+  let normalized = trimmed
+    .replace(/^\.?\//, '')
+    .replace(/^\/+/, '')
+
+  normalized = normalized.replace(/^symbols\/(?:\.editor|editor)\//, '')
+  normalized = normalized.replace(/^symbols\//, '')
+  normalized = normalized.replace(/\.symbol\.json$/i, '')
+  normalized = normalized.replace(/\.(tsx|ts)$/i, '')
+
+  return normalized
+}
+
+export const Canvas: React.FC = () => {
+  const renderSymbolGeometry = (component: PlacedComponent, selected: boolean) => {
+    const resolved = getResolvedSymbolData(component)
+    const symbolShapes = resolved.shapes
+    const symbolWidth = resolved.width
+    const symbolHeight = resolved.height
+    const strokeColor = selected ? '#007acc' : '#4CAF50'
+
+    if (resolved.hasSymbolLink && symbolShapes.length === 0) {
+      const ref = resolved.symbolRefRaw || resolved.symbolRefNormalized || String(component.props.symbolName || component.props.componentType || 'unknown')
+      if (typeof window !== 'undefined') {
+        console.warn(`[symbol-instance] Missing symbol geometry: ${ref}`, {
+          componentId: component.id,
+          componentName: component.name,
+          normalizedRef: resolved.symbolRefNormalized,
+          registryKeys: Object.keys(workspaceSymbolRegistry)
+        })
+      }
+      return (
+        <div
+          style={{
             width: symbolWidth,
             height: symbolHeight,
-            border: `1px dashed ${strokeColor}`,
-            borderRadius: 4,
-            boxSizing: 'border-box'
-          }} />
-        )
-      }
-
-      return (
-        <svg width={symbolWidth} height={symbolHeight} viewBox={`0 0 ${symbolWidth} ${symbolHeight}`} style={{ overflow: 'visible' }}>
-          {symbolShapes.map((shape: any, index: number) => {
-            const key = String(shape.id || `shape-${index}`)
-            if (shape.kind === 'schematicline') {
-              return (
-                <line
-                  key={key}
-                  x1={Number(shape.x1 || 0)}
-                  y1={Number(shape.y1 || 0)}
-                  x2={Number(shape.x2 || 0)}
-                  y2={Number(shape.y2 || 0)}
-                  stroke={strokeColor}
-                  strokeWidth={2}
-                />
-              )
-            }
-            if (shape.kind === 'schematicrect') {
-              return (
-                <rect
-                  key={key}
-                  x={Number(shape.schX || 0)}
-                  y={Number(shape.schY || 0)}
-                  width={Number(shape.width || 1)}
-                  height={Number(shape.height || 1)}
-                  stroke={strokeColor}
-                  strokeWidth={2}
-                  fill="none"
-                />
-              )
-            }
-            if (shape.kind === 'schematiccircle') {
-              return (
-                <circle
-                  key={key}
-                  cx={Number(shape.center?.x || 0)}
-                  cy={Number(shape.center?.y || 0)}
-                  r={Math.max(1, Number(shape.radius || 1))}
-                  stroke={strokeColor}
-                  strokeWidth={2}
-                  fill="none"
-                />
-              )
-            }
-            if (shape.kind === 'schematicarc') {
-              const cx = Number(shape.center?.x || 0)
-              const cy = Number(shape.center?.y || 0)
-              const radius = Math.max(1, Number(shape.radius || 1))
-              const start = Number(shape.startAngleDegrees || 0) * Math.PI / 180
-              const end = Number(shape.endAngleDegrees || 180) * Math.PI / 180
-              const x1 = cx + radius * Math.cos(start)
-              const y1 = cy + radius * Math.sin(start)
-              const x2 = cx + radius * Math.cos(end)
-              const y2 = cy + radius * Math.sin(end)
-              const delta = ((Number(shape.endAngleDegrees || 180) - Number(shape.startAngleDegrees || 0)) % 360 + 360) % 360
-              const largeArc = delta > 180 ? 1 : 0
-              const d = `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2}`
-              return <path key={key} d={d} stroke={strokeColor} strokeWidth={2} fill="none" />
-            }
-            if (shape.kind === 'schematictext') {
-              return (
-                <text key={key} x={Number(shape.schX || 0)} y={Number(shape.schY || 0)} fill={strokeColor} fontSize={10}>
-                  {String(shape.text || '')}
-                </text>
-              )
-            }
-            return null
-          })}
-        </svg>
+            border: '1px dashed #ff4d4f',
+            color: '#ff8080',
+            fontSize: 10,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            textAlign: 'center',
+            padding: 4,
+            background: 'rgba(60, 10, 10, 0.25)'
+          }}
+          title={`Missing symbol geometry: ${ref}`}
+        >
+          {`Missing symbol geometry: ${ref}`}
+        </div>
       )
     }
+
+    return (
+      <svg width={symbolWidth} height={symbolHeight} viewBox={`0 0 ${symbolWidth} ${symbolHeight}`} style={{ overflow: 'visible' }}>
+        {symbolShapes.map((shape: any, index: number) => {
+          const key = String(shape.id || `shape-${index}`)
+          if (shape.kind === 'schematicline') {
+            return (
+              <line
+                key={key}
+                x1={Number(shape.x1 || 0)}
+                y1={Number(shape.y1 || 0)}
+                x2={Number(shape.x2 || 0)}
+                y2={Number(shape.y2 || 0)}
+                stroke={strokeColor}
+                strokeWidth={2}
+              />
+            )
+          }
+          if (shape.kind === 'schematicrect') {
+            const centerX = Number(shape.center?.x ?? shape.schX ?? 0)
+            const centerY = Number(shape.center?.y ?? shape.schY ?? 0)
+            const width = Math.max(1, Number(shape.width || 1))
+            const height = Math.max(1, Number(shape.height || 1))
+            return (
+              <rect
+                key={key}
+                x={centerX - width / 2}
+                y={centerY - height / 2}
+                width={width}
+                height={height}
+                stroke={strokeColor}
+                strokeWidth={2}
+                fill="none"
+              />
+            )
+          }
+          if (shape.kind === 'schematiccircle') {
+            return (
+              <circle
+                key={key}
+                cx={Number(shape.center?.x || 0)}
+                cy={Number(shape.center?.y || 0)}
+                r={Math.max(1, Number(shape.radius || 1))}
+                stroke={strokeColor}
+                strokeWidth={2}
+                fill="none"
+              />
+            )
+          }
+          if (shape.kind === 'schematicarc') {
+            const cx = Number(shape.center?.x || 0)
+            const cy = Number(shape.center?.y || 0)
+            const radius = Math.max(1, Number(shape.radius || 1))
+            const start = Number(shape.startAngleDegrees || 0) * Math.PI / 180
+            const end = Number(shape.endAngleDegrees || 180) * Math.PI / 180
+            const x1 = cx + radius * Math.cos(start)
+            const y1 = cy + radius * Math.sin(start)
+            const x2 = cx + radius * Math.cos(end)
+            const y2 = cy + radius * Math.sin(end)
+            const delta = ((Number(shape.endAngleDegrees || 180) - Number(shape.startAngleDegrees || 0)) % 360 + 360) % 360
+            const largeArc = delta > 180 ? 1 : 0
+            const d = `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2}`
+            return <path key={key} d={d} stroke={strokeColor} strokeWidth={2} fill="none" />
+          }
+          if (shape.kind === 'schematictext') {
+            return (
+              <text key={key} x={Number(shape.schX || 0)} y={Number(shape.schY || 0)} fill={strokeColor} fontSize={10}>
+                {String(shape.text || '')}
+              </text>
+            )
+          }
+          return null
+        })}
+
+        {resolved.ports.map((port) => (
+          <g key={`port-${port.name}`}>
+            <circle cx={port.schX} cy={port.schY} r={2.4} stroke={strokeColor} strokeWidth={1.2} fill="none" />
+            <line x1={port.schX - 6} y1={port.schY} x2={port.schX + 6} y2={port.schY} stroke={strokeColor} strokeWidth={1.1} />
+          </g>
+        ))}
+      </svg>
+    )
+  }
+
+  const SymbolInstanceRenderer: React.FC<{ component: PlacedComponent; selected: boolean; width: number; height: number; rotation: number }> = ({ component, selected, width, height, rotation }) => {
+    return (
+      <div
+        style={{
+          width,
+          height,
+          transform: `rotate(${rotation}deg)`,
+          transformOrigin: 'center center'
+        }}
+      >
+        {renderSymbolGeometry(component, selected)}
+      </div>
+    )
+  }
 
   const SNAP_STEP = 2
   const CANVAS_HALF_EXTENT = 100000
@@ -136,24 +199,55 @@ export const Canvas: React.FC = () => {
     fsMap
   } = useEditorStore()
 
+  const workspaceSymbolRegistry = useMemo(() => buildWorkspaceSymbolRegistry(fsMap), [fsMap])
+
   const symbolRegistryByName = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof extractAllSymbols>[number]>()
-    const normalizeRef = (value: string) => value.trim().replace(/^\.?\/?symbols\//, '').replace(/\.(tsx|ts)$/i, '')
-    const workspaceSymbolRegistry = buildWorkspaceSymbolRegistry(fsMap)
-    extractAllSymbols(fsMap).forEach((symbol) => {
-      map.set(symbol.name, symbol)
-      map.set(symbol.filePath, symbol)
-      map.set(symbol.id, symbol)
-      map.set(normalizeRef(symbol.filePath), symbol)
+    const map = new Map<string, SymbolDefinition>()
+
+    const addAlias = (symbol: SymbolDefinition, alias: string) => {
+      const key = normalizeSymbolRef(alias)
+      if (!key) return
+      map.set(key, symbol)
+    }
+
+    const allSymbols = extractAllSymbols(fsMap)
+    allSymbols.forEach((symbol) => {
+      addAlias(symbol, symbol.id)
+      addAlias(symbol, symbol.name)
+      addAlias(symbol, symbol.filePath)
+      addAlias(symbol, `symbols/${symbol.id}`)
+      addAlias(symbol, `symbols/${symbol.id}.tsx`)
+      addAlias(symbol, `symbols/.editor/${symbol.id}.symbol.json`)
+      addAlias(symbol, `symbols/editor/${symbol.id}.symbol.json`)
     })
+
     Object.values(workspaceSymbolRegistry).forEach((symbol) => {
-      map.set(symbol.id, symbol)
-      map.set(symbol.name, symbol)
-      map.set(symbol.filePath, symbol)
-      map.set(normalizeRef(symbol.filePath), symbol)
+      addAlias(symbol, symbol.id)
+      addAlias(symbol, symbol.name)
+      addAlias(symbol, symbol.filePath)
+      addAlias(symbol, `symbols/${symbol.id}`)
+      addAlias(symbol, `symbols/${symbol.id}.tsx`)
+      addAlias(symbol, `symbols/.editor/${symbol.id}.symbol.json`)
+      addAlias(symbol, `symbols/editor/${symbol.id}.symbol.json`)
     })
+
     return map
-  }, [fsMap])
+  }, [fsMap, workspaceSymbolRegistry])
+
+  const debugSymbolResolution = (component: PlacedComponent, symbolRef: string, resolved?: SymbolDefinition) => {
+    if (typeof window === 'undefined' || !(window as any).__SYMBOL_DEBUG) return
+    const keys = Object.keys(workspaceSymbolRegistry)
+    console.debug('[symbol-resolution]', {
+      componentId: component.id,
+      componentName: component.name,
+      catalogId: component.catalogId,
+      symbolRef,
+      normalizedSymbolRef: normalizeSymbolRef(symbolRef),
+      workspaceSymbolRegistryKeys: keys,
+      resolvedId: resolved?.id,
+      resolvedPath: resolved?.filePath
+    })
+  }
 
   const workspaceComponentRegistry = useMemo(() => buildWorkspaceComponentRegistry(fsMap), [fsMap])
 
@@ -171,10 +265,14 @@ export const Canvas: React.FC = () => {
     }
 
     if (shape.kind === 'schematicrect') {
+      const centerX = Number(shape.center?.x ?? shape.schX ?? 0)
+      const centerY = Number(shape.center?.y ?? shape.schY ?? 0)
       return {
         ...shape,
-        schX: Number(shape.schX || 0) + dx,
-        schY: Number(shape.schY || 0) + dy
+        center: {
+          x: centerX + dx,
+          y: centerY + dy
+        }
       }
     }
 
@@ -200,78 +298,79 @@ export const Canvas: React.FC = () => {
   }
 
   const getResolvedSymbolData = (component: PlacedComponent): {
+    symbolDefinition?: SymbolDefinition
+    symbolRefRaw: string
+    symbolRefNormalized: string
+    hasSymbolLink: boolean
     width: number
     height: number
     origin: { x: number; y: number }
     ports: Array<{ name: string; schX: number; schY: number; side?: string; order?: number }>
     shapes: Array<any>
   } => {
-    const normalizeRef = (value: string) => value.trim().replace(/^\.?\/?symbols\//, '').replace(/\.(tsx|ts)$/i, '')
     const componentType = String(component.props.componentType || component.props.symbolName || '').trim()
     const componentDef = componentType ? workspaceComponentRegistry[componentType] : undefined
-    const symbolRef = String(component.props.symbolRef || componentDef?.symbolRef || '').trim()
+    const symbolRefRaw = String(component.props.symbolRef || componentDef?.symbolRef || '').trim()
     const symbolName = String(component.props.symbolName || '').trim()
     const symbolPath = String(component.props.subcircuitPath || '').trim()
-    const resolved =
-      (symbolRef ? symbolRegistryByName.get(normalizeRef(symbolRef)) : undefined)
-      || symbolRegistryByName.get(symbolName)
-      || symbolRegistryByName.get(symbolPath)
+    const hasSymbolLink =
+      component.catalogId === 'symbol-instance'
+      || symbolRefRaw.length > 0
+      || componentType.length > 0
+      || symbolName.length > 0
+      || symbolPath.startsWith('symbols/')
 
-    const localPorts = Array.isArray(component.props.symbolPorts)
-      ? (component.props.symbolPorts as Array<{ name: string; schX?: number; schY?: number; x?: number; y?: number; side?: string; order?: number }>)
-      : []
-    const localShapes = Array.isArray(component.props.symbolShapes)
-      ? (component.props.symbolShapes as Array<any>)
-      : []
+    const candidates = [
+      symbolRefRaw,
+      componentDef?.symbolRef || '',
+      symbolName,
+      symbolPath,
+      componentType
+    ]
+      .map(value => normalizeSymbolRef(value))
+      .filter(Boolean)
 
-    const resolvedPorts = (resolved?.ports || []).map(port => ({
+    const symbolDefinition = candidates
+      .map(candidate => symbolRegistryByName.get(candidate))
+      .find(Boolean)
+
+    debugSymbolResolution(component, symbolRefRaw, symbolDefinition)
+
+    const resolvedPorts = (symbolDefinition?.ports || []).map(port => ({
       name: String(port.name || ''),
       schX: Number(port.x || 0),
       schY: Number(port.y || 0),
       side: (port as any).side as string | undefined,
       order: (port as any).order as number | undefined
     }))
-    const normalizedLocalPorts = localPorts.map((port) => ({
-      name: String(port.name || ''),
-      schX: Number(port.schX ?? port.x ?? 0),
-      schY: Number(port.schY ?? port.y ?? 0),
-      side: port.side,
-      order: port.order
-    }))
 
-    const resolvedShapes = Array.isArray(resolved?.geometry?.shapes)
-      ? resolved.geometry.shapes
+    const resolvedShapes = Array.isArray(symbolDefinition?.geometry?.shapes)
+      ? symbolDefinition.geometry.shapes
       : []
 
-    const localOriginX = Number(component.props.symbolOriginX)
-    const localOriginY = Number(component.props.symbolOriginY)
-    const resolvedOrigin = resolved?.geometry?.origin
-
-    const width = Math.max(20, Number(component.props.symbolWidth || resolved?.geometry?.width || 120))
-    const height = Math.max(20, Number(component.props.symbolHeight || resolved?.geometry?.height || 80))
+    const width = Math.max(20, Number(symbolDefinition?.geometry?.width || component.props.symbolWidth || 120))
+    const height = Math.max(20, Number(symbolDefinition?.geometry?.height || component.props.symbolHeight || 80))
     const origin = {
-      x: Number.isFinite(localOriginX) ? localOriginX : Number(resolvedOrigin?.x || 0),
-      y: Number.isFinite(localOriginY) ? localOriginY : Number(resolvedOrigin?.y || 0)
+      x: Number(symbolDefinition?.geometry?.origin?.x || 0),
+      y: Number(symbolDefinition?.geometry?.origin?.y || 0)
     }
-    const ports = resolvedPorts.length > 0 ? resolvedPorts : normalizedLocalPorts
-    const shapes = localShapes.length > 0 ? localShapes : resolvedShapes
 
     const points: Array<{ x: number; y: number }> = []
-    ports.forEach((port) => {
+    resolvedPorts.forEach((port) => {
       points.push({ x: Number(port.schX || 0), y: Number(port.schY || 0) })
     })
-    shapes.forEach((shape: any) => {
+    resolvedShapes.forEach((shape: any) => {
       if (shape.kind === 'schematicline') {
         points.push({ x: Number(shape.x1 || 0), y: Number(shape.y1 || 0) })
         points.push({ x: Number(shape.x2 || 0), y: Number(shape.y2 || 0) })
       }
       if (shape.kind === 'schematicrect') {
-        const x = Number(shape.schX || 0)
-        const y = Number(shape.schY || 0)
-        const w = Number(shape.width || 0)
-        const h = Number(shape.height || 0)
-        points.push({ x, y })
-        points.push({ x: x + w, y: y + h })
+        const centerX = Number(shape.center?.x ?? shape.schX ?? 0)
+        const centerY = Number(shape.center?.y ?? shape.schY ?? 0)
+        const halfW = Math.abs(Number(shape.width || 0)) / 2
+        const halfH = Math.abs(Number(shape.height || 0)) / 2
+        points.push({ x: centerX - halfW, y: centerY - halfH })
+        points.push({ x: centerX + halfW, y: centerY + halfH })
       }
       if (shape.kind === 'schematiccircle' || shape.kind === 'schematicarc') {
         const cx = Number(shape.center?.x || 0)
@@ -287,26 +386,25 @@ export const Canvas: React.FC = () => {
 
     const minX = points.length > 0 ? Math.min(...points.map(point => point.x)) : 0
     const minY = points.length > 0 ? Math.min(...points.map(point => point.y)) : 0
-    const maxX = points.length > 0 ? Math.max(...points.map(point => point.x)) : width
-    const maxY = points.length > 0 ? Math.max(...points.map(point => point.y)) : height
-    // Only shift if shapes have unexpected negative coordinates (should not happen for
-    // already-normalized geometry, but guard against edge cases).
-    const needsShift = minX < 0 || minY < 0
-    const shiftX = needsShift ? -minX : 0
-    const shiftY = needsShift ? -minY : 0
+    const shiftX = minX < 0 ? -minX : 0
+    const shiftY = minY < 0 ? -minY : 0
 
     return {
+      symbolDefinition,
+      symbolRefRaw,
+      symbolRefNormalized: normalizeSymbolRef(symbolRefRaw),
+      hasSymbolLink,
       width,
       height,
       origin,
-      ports: ports.map((port) => ({
+      ports: resolvedPorts.map((port) => ({
         name: String(port.name || ''),
         schX: Number(port.schX || 0) + shiftX,
         schY: Number(port.schY || 0) + shiftY,
         side: port.side,
         order: port.order
       })),
-      shapes: shapes.map(shape => shiftSymbolShape(shape, shiftX, shiftY))
+      shapes: resolvedShapes.map(shape => shiftSymbolShape(shape, shiftX, shiftY))
     }
   }
 
@@ -393,12 +491,6 @@ export const Canvas: React.FC = () => {
     if (isCustomSymbolComponent(component)) {
       const resolved = getResolvedSymbolData(component)
       const symbolPorts = resolved.ports
-      const hasSymbolLink =
-        String(component.props.symbolRef || '').trim().length > 0
-        || String(component.props.componentType || '').trim().length > 0
-        || String(component.props.symbolName || '').trim().length > 0
-        || Array.isArray(component.props.symbolPorts)
-        || Array.isArray(component.props.symbolShapes)
       if (symbolPorts.length > 0) {
         const validSide = (side: unknown): 'left' | 'right' | 'top' | 'bottom' | undefined => {
           if (side === 'left' || side === 'right' || side === 'top' || side === 'bottom') return side
@@ -499,20 +591,8 @@ export const Canvas: React.FC = () => {
         })
       }
 
-      if (hasSymbolLink) return []
-
-      const ports = ((component.props.ports as string[] | undefined) || []).map(String)
-      const width = resolved.width
-      if (ports.length === 0) return []
-      return ports.map((portName, index) => {
-        const row = Math.floor(index / 2)
-        const isLeft = index % 2 === 0
-        return {
-          name: portName,
-          x: isLeft ? 0 : width,
-          y: 18 + row * 18
-        }
-      })
+      // Symbol-backed components must use SymbolDefinition ports only.
+      return []
     }
 
     if (component.catalogId === 'netport') {
@@ -811,7 +891,7 @@ export const Canvas: React.FC = () => {
         name: uniqueName,
         props: {
           componentType: workspaceComponentType,
-          symbolRef: workspaceComponentSymbolRef || undefined,
+          symbolRef: normalizeSymbolRef(workspaceComponentSymbolRef || workspaceComponentType) || undefined,
           symbolName: workspaceComponentType,
           subcircuitPath: workspaceComponentSourcePath || undefined,
           ports: Array.isArray(pins) ? pins.map(String) : [],
@@ -855,6 +935,7 @@ export const Canvas: React.FC = () => {
         catalogId: 'symbol-instance',
         name: uniqueName,
         props: {
+          symbolRef: normalizeSymbolRef(symbolComponentPath || symbolComponentName) || undefined,
           symbolName: symbolComponentName,
           subcircuitPath: symbolComponentPath || `symbols/${symbolComponentName}.tsx`,
           ports,
@@ -894,6 +975,7 @@ export const Canvas: React.FC = () => {
         catalogId: 'symbol-instance',
         name: uniqueName,
         props: {
+          symbolRef: normalizeSymbolRef(symbolName) || undefined,
           symbolName,
           schX: x,
           schY: y
@@ -1612,16 +1694,13 @@ export const Canvas: React.FC = () => {
                 )}
 
                 {useCustomSymbolRenderer && (
-                  <div
-                    style={{
-                      width: baseSize.width,
-                      height: baseSize.height,
-                      transform: `rotate(${rotation}deg)`,
-                      transformOrigin: 'center center'
-                    }}
-                  >
-                    {renderSymbolGeometry(component, isSelected)}
-                  </div>
+                  <SymbolInstanceRenderer
+                    component={component}
+                    selected={isSelected}
+                    width={baseSize.width}
+                    height={baseSize.height}
+                    rotation={rotation}
+                  />
                 )}
 
                 {isNet && (

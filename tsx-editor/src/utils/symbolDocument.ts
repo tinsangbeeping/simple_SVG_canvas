@@ -41,6 +41,39 @@ export const parseSymbolDocument = (raw: string, fallbackName: string): SymbolDo
     const parsed = JSON.parse(raw) as Partial<SymbolDocument>
     if (parsed.kind !== 'symbol') return null
 
+    const normalizedShapes = (Array.isArray(parsed.shapes) ? parsed.shapes : []).map((shape: any) => {
+      if (shape?.kind === 'schematicrect') {
+        if (shape.center && Number.isFinite(Number(shape.center.x)) && Number.isFinite(Number(shape.center.y))) {
+          return {
+            ...shape,
+            center: {
+              x: Number(shape.center.x),
+              y: Number(shape.center.y)
+            },
+            width: Number(shape.width || 0),
+            height: Number(shape.height || 0)
+          }
+        }
+
+        // Legacy migration: schX/schY used as top-left in older JSON.
+        const schX = Number(shape.schX || 0)
+        const schY = Number(shape.schY || 0)
+        const width = Number(shape.width || 0)
+        const height = Number(shape.height || 0)
+        return {
+          ...shape,
+          center: {
+            x: schX + width / 2,
+            y: schY + height / 2
+          },
+          width,
+          height
+        }
+      }
+
+      return shape
+    })
+
     return {
       kind: 'symbol',
       name: toSafeSymbolName(String(parsed.name || fallbackName || 'MySymbol')),
@@ -48,7 +81,7 @@ export const parseSymbolDocument = (raw: string, fallbackName: string): SymbolDo
       width: Number(parsed.width || 120),
       height: Number(parsed.height || 80),
       needsManualReview: !!parsed.needsManualReview,
-      shapes: Array.isArray(parsed.shapes) ? (parsed.shapes as SymbolShape[]) : [],
+      shapes: normalizedShapes as SymbolShape[],
       ports: Array.isArray(parsed.ports) ? (parsed.ports as SymbolPort[]) : []
     }
   } catch {
@@ -96,7 +129,7 @@ const symbolShapeToTsx = (shape: SymbolShape): string => {
   }
 
   if (shape.kind === 'schematicrect') {
-    return `<schematicrect schX={${toTsxNumber(shape.schX)}} schY={${toTsxNumber(shape.schY)}} width={${toTsxNumber(shape.width)}} height={${toTsxNumber(shape.height)}} />`
+    return `<schematicrect schX={${toTsxNumber(shape.center.x)}} schY={${toTsxNumber(shape.center.y)}} width={${toTsxNumber(shape.width)}} height={${toTsxNumber(shape.height)}} />`
   }
 
   if (shape.kind === 'schematiccircle') {
@@ -110,17 +143,23 @@ const symbolShapeToTsx = (shape: SymbolShape): string => {
   return `<schematictext schX={${toTsxNumber(shape.schX)}} schY={${toTsxNumber(shape.schY)}} text="${escapeStringLiteral(shape.text)}" />`
 }
 
-const symbolPortToTsx = (port: SymbolPort): string => {
+const symbolPortToTsx = (port: SymbolPort, symbolWidth: number, symbolHeight: number): string => {
   const sideToTscDirection: Record<SymbolPortSide, TscircuitPortDirection> = {
     left: 'left',
     right: 'right',
     top: 'up',
     bottom: 'down'
   }
+  const normalizedCoord = (() => {
+    if (port.side === 'left') return { schX: 0, schY: port.schY }
+    if (port.side === 'right') return { schX: symbolWidth, schY: port.schY }
+    if (port.side === 'top') return { schX: port.schX, schY: 0 }
+    return { schX: port.schX, schY: symbolHeight }
+  })()
   const sidePart = ` side="${port.side}"`
   const orderPart = port.order !== undefined ? ` order={${port.order}}` : ''
   const direction = sideToTscDirection[port.side]
-  return `<port name="${escapeStringLiteral(port.name)}" direction="${direction}"${sidePart}${orderPart} schX={${toTsxNumber(port.schX)}} schY={${toTsxNumber(port.schY)}} />`
+  return `<port name="${escapeStringLiteral(port.name)}" direction="${direction}"${sidePart}${orderPart} schX={${toTsxNumber(normalizedCoord.schX)}} schY={${toTsxNumber(normalizedCoord.schY)}} />`
 }
 
 const toSafeComponentIdentifier = (raw: string): string => {
@@ -131,9 +170,11 @@ const toSafeComponentIdentifier = (raw: string): string => {
 
 export const generateSymbolTsx = (document: SymbolDocument): string => {
   const fnName = toSafeComponentIdentifier(document.name || 'MySymbol')
+  const symbolWidth = Math.max(20, Number(document.width || 120))
+  const symbolHeight = Math.max(20, Number(document.height || 80))
   const rows = [
     ...document.shapes.filter(isRenderableSymbolShape).map(symbolShapeToTsx),
-    ...document.ports.map(symbolPortToTsx)
+    ...document.ports.map(port => symbolPortToTsx(port, symbolWidth, symbolHeight))
   ]
 
   const body = rows.length > 0
@@ -147,7 +188,7 @@ const parseNumericProp = (tag: string, propName: string): { value: number | null
   const exprMatch = tag.match(new RegExp(`${propName}\\s*=\\s*\\{([^}]+)\\}`))
   if (exprMatch?.[1] !== undefined) {
     const raw = exprMatch[1].trim()
-    if (/^-?\\d+(?:\\.\\d+)?$/.test(raw)) {
+    if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
       return { value: Number(raw), dynamic: false }
     }
     return { value: null, dynamic: true }
@@ -156,7 +197,7 @@ const parseNumericProp = (tag: string, propName: string): { value: number | null
   const stringMatch = tag.match(new RegExp(`${propName}\\s*=\\s*[\"']([^\"']+)[\"']`))
   if (stringMatch?.[1] !== undefined) {
     const raw = stringMatch[1].trim()
-    if (/^-?\\d+(?:\\.\\d+)?$/.test(raw)) {
+    if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
       return { value: Number(raw), dynamic: false }
     }
     return { value: null, dynamic: true }
@@ -233,7 +274,16 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
     const width = parseNumericProp(tag, 'width')
     const height = parseNumericProp(tag, 'height')
     if ([schX.value, schY.value, width.value, height.value].every(v => v !== null)) {
-      document.shapes.push({ id: nextImportedId('rect'), kind: 'schematicrect', schX: schX.value as number, schY: schY.value as number, width: width.value as number, height: height.value as number })
+      document.shapes.push({
+        id: nextImportedId('rect'),
+        kind: 'schematicrect',
+        center: {
+          x: schX.value as number,
+          y: schY.value as number
+        },
+        width: width.value as number,
+        height: height.value as number
+      })
     } else {
       needsManualReview = needsManualReview || schX.dynamic || schY.dynamic || width.dynamic || height.dynamic
     }
