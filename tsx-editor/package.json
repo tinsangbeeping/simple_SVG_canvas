@@ -10,6 +10,7 @@
     "tsci": "tsci",
     "tsci:doctor": "tsci doctor",
     "verify:minimal-roundtrip": "vite-node scripts/verify-minimal-roundtrip.ts",
+    "verify:symbol-roundtrip": "vite-node scripts/verify-symbol-roundtrip.ts",
     "validate": "vite-node ../scripts/validate.ts",
     "validate:workspace": "vite-node scripts/validate-workspace.ts"
   },

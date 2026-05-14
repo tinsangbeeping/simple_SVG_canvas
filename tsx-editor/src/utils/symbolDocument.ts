@@ -1,4 +1,4 @@
-import { SymbolDocument, SymbolPort, SymbolPortDirection, SymbolPortSide, SymbolSelection, SymbolShape } from '../types/symbolDocument'
+import { ElectricalDirection, SymbolDocument, SymbolPort, SymbolPortSide, SymbolSelection, SymbolShape, TscircuitPortDirection } from '../types/symbolDocument'
 
 const SYMBOL_EDITOR_PREFIX = 'symbols/.editor/'
 const SYMBOL_EDITOR_SUFFIX = '.symbol.json'
@@ -41,6 +41,39 @@ export const parseSymbolDocument = (raw: string, fallbackName: string): SymbolDo
     const parsed = JSON.parse(raw) as Partial<SymbolDocument>
     if (parsed.kind !== 'symbol') return null
 
+    const normalizedShapes = (Array.isArray(parsed.shapes) ? parsed.shapes : []).map((shape: any) => {
+      if (shape?.kind === 'schematicrect') {
+        if (shape.center && Number.isFinite(Number(shape.center.x)) && Number.isFinite(Number(shape.center.y))) {
+          return {
+            ...shape,
+            center: {
+              x: Number(shape.center.x),
+              y: Number(shape.center.y)
+            },
+            width: Number(shape.width || 0),
+            height: Number(shape.height || 0)
+          }
+        }
+
+        // Legacy migration: schX/schY used as top-left in older JSON.
+        const schX = Number(shape.schX || 0)
+        const schY = Number(shape.schY || 0)
+        const width = Number(shape.width || 0)
+        const height = Number(shape.height || 0)
+        return {
+          ...shape,
+          center: {
+            x: schX + width / 2,
+            y: schY + height / 2
+          },
+          width,
+          height
+        }
+      }
+
+      return shape
+    })
+
     return {
       kind: 'symbol',
       name: toSafeSymbolName(String(parsed.name || fallbackName || 'MySymbol')),
@@ -48,7 +81,7 @@ export const parseSymbolDocument = (raw: string, fallbackName: string): SymbolDo
       width: Number(parsed.width || 120),
       height: Number(parsed.height || 80),
       needsManualReview: !!parsed.needsManualReview,
-      shapes: Array.isArray(parsed.shapes) ? (parsed.shapes as SymbolShape[]) : [],
+      shapes: normalizedShapes as SymbolShape[],
       ports: Array.isArray(parsed.ports) ? (parsed.ports as SymbolPort[]) : []
     }
   } catch {
@@ -96,7 +129,7 @@ const symbolShapeToTsx = (shape: SymbolShape): string => {
   }
 
   if (shape.kind === 'schematicrect') {
-    return `<schematicrect schX={${toTsxNumber(shape.schX)}} schY={${toTsxNumber(shape.schY)}} width={${toTsxNumber(shape.width)}} height={${toTsxNumber(shape.height)}} />`
+    return `<schematicrect schX={${toTsxNumber(shape.center.x)}} schY={${toTsxNumber(shape.center.y)}} width={${toTsxNumber(shape.width)}} height={${toTsxNumber(shape.height)}} />`
   }
 
   if (shape.kind === 'schematiccircle') {
@@ -110,10 +143,23 @@ const symbolShapeToTsx = (shape: SymbolShape): string => {
   return `<schematictext schX={${toTsxNumber(shape.schX)}} schY={${toTsxNumber(shape.schY)}} text="${escapeStringLiteral(shape.text)}" />`
 }
 
-const symbolPortToTsx = (port: SymbolPort): string => {
-  const sidePart = port.side ? ` side="${port.side}"` : ''
+const symbolPortToTsx = (port: SymbolPort, symbolWidth: number, symbolHeight: number): string => {
+  const sideToTscDirection: Record<SymbolPortSide, TscircuitPortDirection> = {
+    left: 'left',
+    right: 'right',
+    top: 'up',
+    bottom: 'down'
+  }
+  const normalizedCoord = (() => {
+    if (port.side === 'left') return { schX: 0, schY: port.schY }
+    if (port.side === 'right') return { schX: symbolWidth, schY: port.schY }
+    if (port.side === 'top') return { schX: port.schX, schY: 0 }
+    return { schX: port.schX, schY: symbolHeight }
+  })()
+  const sidePart = ` side="${port.side}"`
   const orderPart = port.order !== undefined ? ` order={${port.order}}` : ''
-  return `<port name="${escapeStringLiteral(port.name)}" direction="${port.direction}"${sidePart}${orderPart} schX={${toTsxNumber(port.schX)}} schY={${toTsxNumber(port.schY)}} />`
+  const direction = sideToTscDirection[port.side]
+  return `<port name="${escapeStringLiteral(port.name)}" direction="${direction}"${sidePart}${orderPart} schX={${toTsxNumber(normalizedCoord.schX)}} schY={${toTsxNumber(normalizedCoord.schY)}} />`
 }
 
 const toSafeComponentIdentifier = (raw: string): string => {
@@ -124,23 +170,25 @@ const toSafeComponentIdentifier = (raw: string): string => {
 
 export const generateSymbolTsx = (document: SymbolDocument): string => {
   const fnName = toSafeComponentIdentifier(document.name || 'MySymbol')
+  const symbolWidth = Math.max(20, Number(document.width || 120))
+  const symbolHeight = Math.max(20, Number(document.height || 80))
   const rows = [
     ...document.shapes.filter(isRenderableSymbolShape).map(symbolShapeToTsx),
-    ...document.ports.map(symbolPortToTsx)
+    ...document.ports.map(port => symbolPortToTsx(port, symbolWidth, symbolHeight))
   ]
 
   const body = rows.length > 0
     ? rows.map(row => `          ${row}`).join('\n')
     : '          {/* Empty symbol */}'
 
-  return `export default function ${fnName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <chip\n      name={props.name}\n      schX={props.schX}\n      schY={props.schY}\n      footprint=\"none\"\n      symbol={\n        <symbol>\n${body}\n        </symbol>\n      }\n    />\n  )\n}\n`
+  return `export default function ${fnName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <chip\n      name={props.name}\n      schX={props.schX}\n      schY={props.schY}\n      symbol={\n        <symbol>\n${body}\n        </symbol>\n      }\n    />\n  )\n}\n`
 }
 
 const parseNumericProp = (tag: string, propName: string): { value: number | null; dynamic: boolean } => {
   const exprMatch = tag.match(new RegExp(`${propName}\\s*=\\s*\\{([^}]+)\\}`))
   if (exprMatch?.[1] !== undefined) {
     const raw = exprMatch[1].trim()
-    if (/^-?\\d+(?:\\.\\d+)?$/.test(raw)) {
+    if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
       return { value: Number(raw), dynamic: false }
     }
     return { value: null, dynamic: true }
@@ -149,7 +197,7 @@ const parseNumericProp = (tag: string, propName: string): { value: number | null
   const stringMatch = tag.match(new RegExp(`${propName}\\s*=\\s*[\"']([^\"']+)[\"']`))
   if (stringMatch?.[1] !== undefined) {
     const raw = stringMatch[1].trim()
-    if (/^-?\\d+(?:\\.\\d+)?$/.test(raw)) {
+    if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
       return { value: Number(raw), dynamic: false }
     }
     return { value: null, dynamic: true }
@@ -226,7 +274,16 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
     const width = parseNumericProp(tag, 'width')
     const height = parseNumericProp(tag, 'height')
     if ([schX.value, schY.value, width.value, height.value].every(v => v !== null)) {
-      document.shapes.push({ id: nextImportedId('rect'), kind: 'schematicrect', schX: schX.value as number, schY: schY.value as number, width: width.value as number, height: height.value as number })
+      document.shapes.push({
+        id: nextImportedId('rect'),
+        kind: 'schematicrect',
+        center: {
+          x: schX.value as number,
+          y: schY.value as number
+        },
+        width: width.value as number,
+        height: height.value as number
+      })
     } else {
       needsManualReview = needsManualReview || schX.dynamic || schY.dynamic || width.dynamic || height.dynamic
     }
@@ -291,7 +348,7 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
     const schY = parseNumericProp(tag, 'schY')
     if (name.value !== null) {
       const rawDirection = String(direction.value || 'passive').toLowerCase()
-      const validDirections: SymbolPortDirection[] = ['input', 'output', 'inout', 'passive']
+        const validElectricalDirections: ElectricalDirection[] = ['input', 'output', 'inout', 'passive']
       const directionAsSide: Record<string, SymbolPortSide> = {
         left: 'left',
         right: 'right',
@@ -300,19 +357,24 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
         up: 'top',
         down: 'bottom'
       }
-      const parsedDirection = validDirections.includes(rawDirection as SymbolPortDirection)
-        ? (rawDirection as SymbolPortDirection)
-        : 'passive'
+        const parsedElectricalDirection = validElectricalDirections.includes(rawDirection as ElectricalDirection)
+          ? (rawDirection as ElectricalDirection)
+          : undefined
       const sideValue = String(side.value || '').toLowerCase()
-      const parsedSide = ((): SymbolPortSide | undefined => {
+        const parsedSide = ((): SymbolPortSide => {
         if (sideValue in directionAsSide) return directionAsSide[sideValue]
         if (rawDirection in directionAsSide) return directionAsSide[rawDirection]
-        return undefined
+          const x = schX.value !== null ? schX.value : 0
+          const y = schY.value !== null ? schY.value : 0
+          const absX = Math.abs(x)
+          const absY = Math.abs(y)
+          if (absX >= absY) return x >= 0 ? 'right' : 'left'
+          return y >= 0 ? 'bottom' : 'top'
       })()
       document.ports.push({
         id: nextImportedId('port'),
         name: name.value,
-        direction: parsedDirection,
+          electricalDirection: parsedElectricalDirection,
         side: parsedSide,
         order: order.value !== null ? order.value : undefined,
         schX: schX.value !== null ? schX.value : 0,

@@ -176,7 +176,7 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
     if (toolMode === 'port') {
       const name = window.prompt('Port name:', 'P1')?.trim()
       if (!name) return
-      const direction = (window.prompt('Direction (input/output/inout/passive):', 'passive') || 'passive').trim().toLowerCase()
+      const direction = (window.prompt('Electrical direction (input/output/inout/passive):', 'passive') || 'passive').trim().toLowerCase()
       const normalizedDirection = ['input', 'output', 'inout', 'passive'].includes(direction) ? direction as 'input' | 'output' | 'inout' | 'passive' : 'passive'
 
       // Infer which side of the symbol boundary this port belongs to,
@@ -192,6 +192,12 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       } else {
         inferredSide = dy >= 0 ? 'bottom' : 'top'
       }
+      const snapped = (() => {
+        if (inferredSide === 'left') return { x: 0, y: point.y }
+        if (inferredSide === 'right') return { x: document.width, y: point.y }
+        if (inferredSide === 'top') return { x: point.x, y: 0 }
+        return { x: point.x, y: document.height }
+      })()
       const existingSideOrder = document.ports
         .filter(p => p.side === inferredSide)
         .length
@@ -201,11 +207,11 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         ports: [...document.ports, {
           id: nextShapeId('port'),
           name,
-          direction: normalizedDirection,
+          electricalDirection: normalizedDirection,
           side: inferredSide,
           order: existingSideOrder,
-          schX: point.x,
-          schY: point.y
+          schX: snapped.x,
+          schY: snapped.y
         }]
       }
       onDocumentChange(nextDoc)
@@ -260,11 +266,13 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         }
 
         if (shape.kind === 'schematicrect') {
+          const halfW = shape.width / 2
+          const halfH = shape.height / 2
           return {
-            minX: shape.schX,
-            maxX: shape.schX + shape.width,
-            minY: shape.schY,
-            maxY: shape.schY + shape.height
+            minX: shape.center.x - halfW,
+            maxX: shape.center.x + halfW,
+            minY: shape.center.y - halfH,
+            maxY: shape.center.y + halfH
           }
         }
 
@@ -350,11 +358,17 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         y2: draftEnd.y
       }
     } else if (toolMode === 'schematicrect') {
+      const minX = Math.min(draftStart.x, draftEnd.x)
+      const maxX = Math.max(draftStart.x, draftEnd.x)
+      const minY = Math.min(draftStart.y, draftEnd.y)
+      const maxY = Math.max(draftStart.y, draftEnd.y)
       nextShape = {
         id: nextShapeId('rect'),
         kind: 'schematicrect',
-        schX: Math.min(draftStart.x, draftEnd.x),
-        schY: Math.min(draftStart.y, draftEnd.y),
+        center: {
+          x: (minX + maxX) / 2,
+          y: (minY + maxY) / 2
+        },
         width: Math.abs(draftEnd.x - draftStart.x),
         height: Math.abs(draftEnd.y - draftStart.y)
       }
@@ -411,11 +425,17 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
     }
 
     if (toolMode === 'schematicrect') {
+      const minX = Math.min(draftStart.x, draftEnd.x)
+      const maxX = Math.max(draftStart.x, draftEnd.x)
+      const minY = Math.min(draftStart.y, draftEnd.y)
+      const maxY = Math.max(draftStart.y, draftEnd.y)
       return {
         id: 'draft',
         kind: 'schematicrect',
-        schX: Math.min(draftStart.x, draftEnd.x),
-        schY: Math.min(draftStart.y, draftEnd.y),
+        center: {
+          x: (minX + maxX) / 2,
+          y: (minY + maxY) / 2
+        },
         width: Math.abs(draftEnd.x - draftStart.x),
         height: Math.abs(draftEnd.y - draftStart.y)
       }
@@ -493,7 +513,16 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
     }
 
     if (shape.kind === 'schematicrect') {
-      return <rect key={shape.id} x={shape.schX} y={shape.schY} width={shape.width} height={shape.height} {...common} />
+      return (
+        <rect
+          key={shape.id}
+          x={shape.center.x - shape.width / 2}
+          y={shape.center.y - shape.height / 2}
+          width={shape.width}
+          height={shape.height}
+          {...common}
+        />
+      )
     }
 
     if (shape.kind === 'schematiccircle') {

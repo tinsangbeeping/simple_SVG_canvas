@@ -1,26 +1,17 @@
 import type { ExportGraph, ExportTrace, ExportNetLabel } from '../types/exportGraph'
 
-const serializeTraceRoutePoints = (routePoints: ExportTrace['routePoints']): string | null => {
-  if (!Array.isArray(routePoints) || routePoints.length < 2) return null
-  const normalized = routePoints
-    .map(point => ({ x: Number(point.x), y: Number(point.y) }))
-    .filter(point => Number.isFinite(point.x) && Number.isFinite(point.y))
-
-  if (normalized.length < 2) return null
-
-  return normalized
-    .map(point => `${Math.round(point.x * 1000) / 1000},${Math.round(point.y * 1000) / 1000}`)
-    .join(';')
-}
-
 const compileTrace = (trace: ExportTrace): string => {
-  const routePointsRaw = serializeTraceRoutePoints(trace.routePoints)
-  const routePointsAttr = routePointsRaw ? ` routePoints="${routePointsRaw}"` : ''
-  return `<trace from="${trace.from}" to="${trace.to}"${routePointsAttr} />`
+  return `<trace from="${trace.from}" to="${trace.to}" />`
 }
 
 const compileNetLabel = (label: ExportNetLabel): string => {
-  return `<netlabel net="${label.net}" />`
+  const schX = Number(label.schX)
+  const schY = Number(label.schY)
+  const schXAttr = Number.isFinite(schX) ? ` schX={${Math.round(schX * 1000) / 1000}}` : ''
+  const schYAttr = Number.isFinite(schY) ? ` schY={${Math.round(schY * 1000) / 1000}}` : ''
+  const netRoleRaw = String(label.netRole || '').trim()
+  const netRoleAttr = netRoleRaw ? ` netRole="${netRoleRaw}"` : ''
+  return `<netlabel net="${label.net}"${schXAttr}${schYAttr}${netRoleAttr} />`
 }
 
 export const compileExportGraphToTSXNodes = (graph: ExportGraph): string[] => {

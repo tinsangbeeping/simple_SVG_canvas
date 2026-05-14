@@ -1445,7 +1445,17 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
       .filter(component => !!component.sourceFilePath)
       .map(component => [String(component.sourceFilePath), component])
   )
-  const normalizeSymbolRef = (ref: string): string => ref.trim().replace(/^\.?\/?symbols\//, '').replace(/\.(tsx|ts)$/i, '')
+  const normalizeSymbolRef = (ref: string): string => {
+    return String(ref || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\.?\//, '')
+      .replace(/^\/+/, '')
+      .replace(/^symbols\/(?:\.editor|editor)\//, '')
+      .replace(/^symbols\//, '')
+      .replace(/\.symbol\.json$/i, '')
+      .replace(/\.(tsx|ts)$/i, '')
+  }
   const symbolNames = getWorkspaceSymbolNames(fsMap)
   const symbolDefinitions = extractAllSymbols(fsMap)
   const symbolDefinitionsByName = new Map(symbolDefinitions.map(symbol => [symbol.name, symbol]))
@@ -1669,8 +1679,13 @@ const parseFileToCanvas = (filePath: string, fsMap: FSMap): { components: Placed
     } else if (isPublicPort) {
       props.publicPortName = name
     } else if (isSymbolReference) {
+      const stableSymbolRef =
+        resolvedSymbolDefinition?.id
+        || normalizeSymbolRef(String(resolvedComponentDefinition?.symbolRef || ''))
+        || normalizeSymbolRef(String(props.symbolRef || ''))
+
       props.componentType = resolvedComponentDefinition?.componentType || tagName
-      props.symbolRef = resolvedComponentDefinition?.symbolRef || props.symbolRef
+      props.symbolRef = stableSymbolRef || undefined
       props.symbolName = resolvedComponentDefinition?.componentType || tagName
       props.ports = resolvedComponentDefinition?.pins
         || resolvedSymbolDefinition?.ports.map(port => port.name)
@@ -2551,7 +2566,6 @@ const createGraphExportArtifacts = (
     })
   })
 
-  const labelsByNet = new Map<string, Array<{ x: number; y: number; explicit: boolean }>>()
   components
     .filter(component => component.catalogId === 'netlabel')
     .filter(component => component.props.internalHelper !== true)
@@ -2559,26 +2573,14 @@ const createGraphExportArtifacts = (
       const rawNet = String(component.props.net || component.props.netName || component.name || '').trim()
       if (!rawNet) return
       const net = canonicalizeNetName(rawNet)
-      const x = Number(component.props.schX || 0)
-      const y = Number(component.props.schY || 0)
-      const explicit = component.props.layoutLocked === true
-      const bucket = labelsByNet.get(net) || []
-      bucket.push({ x, y, explicit })
-      labelsByNet.set(net, bucket)
+      exportGraph.nodes.push({
+        kind: 'netlabel',
+        net,
+        schX: Number(component.props.schX),
+        schY: Number(component.props.schY),
+        netRole: String(component.props.netRole || inferNetRole(net))
+      })
     })
-
-  labelsByNet.forEach((labels, net) => {
-    const explicitLabels = labels.filter(label => label.explicit)
-    if (explicitLabels.length > 0) {
-      exportGraph.nodes.push({ kind: 'netlabel', net })
-      return
-    }
-
-    // If there are only default/unpositioned labels, emit at most one explicit netlabel.
-    if (labels.length > 0) {
-      exportGraph.nodes.push({ kind: 'netlabel', net })
-    }
-  })
 
   compileExportGraphToTSXNodes(exportGraph).forEach(snippet => traceSet.add(snippet))
 

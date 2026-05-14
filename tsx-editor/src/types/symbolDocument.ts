@@ -17,8 +17,7 @@ export interface SchematicLineShape extends SymbolShapeBase {
 
 export interface SchematicRectShape extends SymbolShapeBase {
   kind: 'schematicrect'
-  schX: number
-  schY: number
+  center: { x: number; y: number }
   width: number
   height: number
 }
@@ -51,14 +50,15 @@ export type SymbolShape =
   | SchematicArcShape
   | SchematicTextShape
 
-export type SymbolPortDirection = 'input' | 'output' | 'inout' | 'passive'
+export type ElectricalDirection = 'input' | 'output' | 'inout' | 'passive'
 export type SymbolPortSide = 'left' | 'right' | 'top' | 'bottom'
+export type TscircuitPortDirection = 'left' | 'right' | 'up' | 'down'
 
 export interface SymbolPort {
   id: string
   name: string
-  direction: SymbolPortDirection
-  side?: SymbolPortSide
+  electricalDirection?: ElectricalDirection
+  side: SymbolPortSide
   order?: number
   schX: number
   schY: number

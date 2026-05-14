@@ -33,6 +33,7 @@ import { getApplicablePatches } from './lib/patches'
 import './App.css'
 
 const MAIN_SCHEMATIC_PATH = 'schematics/main.tsx'
+const BLOCK_DIAGRAM_FILES_PATH = 'src/components/BlockDiagramEditorPage.tsx'
 
 type LeftTab = 'workspaces' | 'files' | 'schematics' | 'components' | 'symbols' | 'subcircuits' | 'patches'
 
@@ -267,7 +268,7 @@ function App() {
 
     setFSMap({
       ...fsMap,
-      [filePath]: `export default function ${safeName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <chip\n      name={props.name}\n      schX={props.schX}\n      schY={props.schY}\n      footprint="none"\n      symbol={\n        <symbol>\n          <schematicline x1={0} y1={20} x2={40} y2={20} />\n          <port name="P1" direction="passive" schX={0} schY={20} />\n          <port name="P2" direction="passive" schX={40} schY={20} />\n        </symbol>\n      }\n    />\n  )\n}\n`
+      [filePath]: `export default function ${safeName}(props: { name: string; schX?: number; schY?: number }) {\n  return (\n    <chip\n      name={props.name}\n      schX={props.schX}\n      schY={props.schY}\n      symbol={\n        <symbol>\n          <schematicline x1={0} y1={20} x2={40} y2={20} />\n          <port name="P1" direction="left" side="left" schX={0} schY={20} />\n          <port name="P2" direction="right" side="right" schX={40} schY={20} />\n        </symbol>\n      }\n    />\n  )\n}\n`
     })
     setActiveFilePath(filePath)
   }
@@ -689,6 +690,11 @@ function App() {
         {/* ── Center: editor tabs + canvas ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <EditorTabs />
+          {canRenderCanvas && (
+            <div style={{ padding: '4px 10px', borderBottom: '1px solid #2f2f2f', background: '#202020', color: '#8f8f8f', fontSize: 11 }}>
+              Block diagram modules available at {BLOCK_DIAGRAM_FILES_PATH}
+            </div>
+          )}
           {canRenderSymbolEditor && (
             <div style={{ display: 'flex', gap: 6, padding: '6px 10px', borderBottom: '1px solid #2f2f2f', background: '#202020' }}>
               <button

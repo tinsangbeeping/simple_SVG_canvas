@@ -55,6 +55,7 @@ export interface SymbolDefinition {
     name: string
     x: number
     y: number
+    electricalDirection?: 'input' | 'output' | 'inout' | 'passive'
     side?: 'left' | 'right' | 'top' | 'bottom'
     order?: number
   }> // pin definitions
