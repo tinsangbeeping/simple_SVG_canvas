@@ -17,29 +17,32 @@ export interface SchematicLineShape extends SymbolShapeBase {
 
 export interface SchematicRectShape extends SymbolShapeBase {
   kind: 'schematicrect'
-  center: { x: number; y: number }
+  x: number
+  y: number
   width: number
   height: number
 }
 
 export interface SchematicCircleShape extends SymbolShapeBase {
   kind: 'schematiccircle'
-  center: { x: number; y: number }
+  cx: number
+  cy: number
   radius: number
 }
 
 export interface SchematicArcShape extends SymbolShapeBase {
   kind: 'schematicarc'
-  center: { x: number; y: number }
+  cx: number
+  cy: number
   radius: number
-  startAngleDegrees: number
-  endAngleDegrees: number
+  startAngle: number
+  endAngle: number
 }
 
 export interface SchematicTextShape extends SymbolShapeBase {
   kind: 'schematictext'
-  schX: number
-  schY: number
+  x: number
+  y: number
   text: string
 }
 
@@ -60,8 +63,8 @@ export interface SymbolPort {
   electricalDirection?: ElectricalDirection
   side: SymbolPortSide
   order?: number
-  schX: number
-  schY: number
+  x: number
+  y: number
 }
 
 export interface SymbolDocument {

@@ -24,6 +24,103 @@ export const getGeneratedSymbolTsxPath = (name: string): string => {
   return `symbols/${toSafeSymbolName(name)}.tsx`
 }
 
+const toFiniteNumber = (value: unknown, fallback = 0): number => {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
+}
+
+const normalizeLegacyRectShape = (shape: Record<string, any>): SymbolShape => {
+  const width = Math.abs(toFiniteNumber(shape.width))
+  const height = Math.abs(toFiniteNumber(shape.height))
+  const x = toFiniteNumber(shape.x ?? shape.schX ?? (shape.center ? shape.center.x - width / 2 : 0))
+  const y = toFiniteNumber(shape.y ?? shape.schY ?? (shape.center ? shape.center.y - height / 2 : 0))
+
+  return {
+    id: String(shape.id || `rect-${Date.now()}`),
+    kind: 'schematicrect',
+    x,
+    y,
+    width,
+    height
+  }
+}
+
+const normalizeLegacyCircleShape = (shape: Record<string, any>): SymbolShape => {
+  const cx = toFiniteNumber(shape.cx ?? shape.center?.x ?? shape.x)
+  const cy = toFiniteNumber(shape.cy ?? shape.center?.y ?? shape.y)
+
+  return {
+    id: String(shape.id || `circle-${Date.now()}`),
+    kind: 'schematiccircle',
+    cx,
+    cy,
+    radius: Math.abs(toFiniteNumber(shape.radius))
+  }
+}
+
+const normalizeLegacyArcShape = (shape: Record<string, any>): SymbolShape => {
+  const cx = toFiniteNumber(shape.cx ?? shape.center?.x ?? shape.x)
+  const cy = toFiniteNumber(shape.cy ?? shape.center?.y ?? shape.y)
+
+  return {
+    id: String(shape.id || `arc-${Date.now()}`),
+    kind: 'schematicarc',
+    cx,
+    cy,
+    radius: Math.abs(toFiniteNumber(shape.radius)),
+    startAngle: toFiniteNumber(shape.startAngle ?? shape.startAngleDegrees),
+    endAngle: toFiniteNumber(shape.endAngle ?? shape.endAngleDegrees)
+  }
+}
+
+const normalizeLegacyTextShape = (shape: Record<string, any>): SymbolShape => {
+  return {
+    id: String(shape.id || `text-${Date.now()}`),
+    kind: 'schematictext',
+    x: toFiniteNumber(shape.x ?? shape.schX),
+    y: toFiniteNumber(shape.y ?? shape.schY),
+    text: String(shape.text || '')
+  }
+}
+
+const normalizeSymbolShape = (shape: Record<string, any>): SymbolShape | null => {
+  if (!shape || typeof shape !== 'object') return null
+  const shapeKind = String(shape.kind || shape.type || '')
+
+  if (shapeKind === 'schematicline') {
+    return {
+      id: String(shape.id || `line-${Date.now()}`),
+      kind: 'schematicline',
+      x1: toFiniteNumber(shape.x1),
+      y1: toFiniteNumber(shape.y1),
+      x2: toFiniteNumber(shape.x2),
+      y2: toFiniteNumber(shape.y2)
+    }
+  }
+
+  if (shapeKind === 'schematicrect') return normalizeLegacyRectShape(shape)
+  if (shapeKind === 'schematiccircle') return normalizeLegacyCircleShape(shape)
+  if (shapeKind === 'schematicarc') return normalizeLegacyArcShape(shape)
+  if (shapeKind === 'schematictext') return normalizeLegacyTextShape(shape)
+
+  return null
+}
+
+const normalizeSymbolPort = (port: Record<string, any>, fallbackOrder: number): SymbolPort | null => {
+  if (!port || typeof port !== 'object') return null
+  const name = String(port.name || '').trim()
+  if (!name) return null
+  return {
+    id: String(port.id || `port-${Date.now()}-${fallbackOrder}`),
+    name,
+    electricalDirection: port.electricalDirection,
+    side: port.side,
+    order: port.order !== undefined ? Number(port.order) : fallbackOrder,
+    x: toFiniteNumber(port.x ?? port.schX),
+    y: toFiniteNumber(port.y ?? port.schY)
+  }
+}
+
 export const createSymbolDocument = (name: string): SymbolDocument => {
   return {
     kind: 'symbol',
@@ -41,38 +138,13 @@ export const parseSymbolDocument = (raw: string, fallbackName: string): SymbolDo
     const parsed = JSON.parse(raw) as Partial<SymbolDocument>
     if (parsed.kind !== 'symbol') return null
 
-    const normalizedShapes = (Array.isArray(parsed.shapes) ? parsed.shapes : []).map((shape: any) => {
-      if (shape?.kind === 'schematicrect') {
-        if (shape.center && Number.isFinite(Number(shape.center.x)) && Number.isFinite(Number(shape.center.y))) {
-          return {
-            ...shape,
-            center: {
-              x: Number(shape.center.x),
-              y: Number(shape.center.y)
-            },
-            width: Number(shape.width || 0),
-            height: Number(shape.height || 0)
-          }
-        }
+    const normalizedShapes = (Array.isArray(parsed.shapes) ? parsed.shapes : [])
+      .map(shape => normalizeSymbolShape(shape as Record<string, any>))
+      .filter(Boolean) as SymbolShape[]
 
-        // Legacy migration: schX/schY used as top-left in older JSON.
-        const schX = Number(shape.schX || 0)
-        const schY = Number(shape.schY || 0)
-        const width = Number(shape.width || 0)
-        const height = Number(shape.height || 0)
-        return {
-          ...shape,
-          center: {
-            x: schX + width / 2,
-            y: schY + height / 2
-          },
-          width,
-          height
-        }
-      }
-
-      return shape
-    })
+    const normalizedPorts = (Array.isArray(parsed.ports) ? parsed.ports : [])
+      .map((port, index) => normalizeSymbolPort(port as Record<string, any>, index))
+      .filter(Boolean) as SymbolPort[]
 
     return {
       kind: 'symbol',
@@ -81,8 +153,8 @@ export const parseSymbolDocument = (raw: string, fallbackName: string): SymbolDo
       width: Number(parsed.width || 120),
       height: Number(parsed.height || 80),
       needsManualReview: !!parsed.needsManualReview,
-      shapes: normalizedShapes as SymbolShape[],
-      ports: Array.isArray(parsed.ports) ? (parsed.ports as SymbolPort[]) : []
+      shapes: normalizedShapes,
+      ports: normalizedPorts
     }
   } catch {
     return null
@@ -112,7 +184,7 @@ const isRenderableSymbolShape = (shape: SymbolShape): boolean => {
   }
 
   if (shape.kind === 'schematicarc') {
-    const delta = Math.abs(((shape.endAngleDegrees - shape.startAngleDegrees) % 360 + 360) % 360)
+    const delta = Math.abs(((shape.endAngle - shape.startAngle) % 360 + 360) % 360)
     return Math.abs(shape.radius) > 0 && delta > 0
   }
 
@@ -129,18 +201,18 @@ const symbolShapeToTsx = (shape: SymbolShape): string => {
   }
 
   if (shape.kind === 'schematicrect') {
-    return `<schematicrect schX={${toTsxNumber(shape.center.x)}} schY={${toTsxNumber(shape.center.y)}} width={${toTsxNumber(shape.width)}} height={${toTsxNumber(shape.height)}} />`
+    return `<schematicrect x={${toTsxNumber(shape.x)}} y={${toTsxNumber(shape.y)}} width={${toTsxNumber(shape.width)}} height={${toTsxNumber(shape.height)}} />`
   }
 
   if (shape.kind === 'schematiccircle') {
-    return `<schematiccircle center={{ x: ${toTsxNumber(shape.center.x)}, y: ${toTsxNumber(shape.center.y)} }} radius={${toTsxNumber(shape.radius)}} />`
+    return `<schematiccircle cx={${toTsxNumber(shape.cx)}} cy={${toTsxNumber(shape.cy)}} radius={${toTsxNumber(shape.radius)}} />`
   }
 
   if (shape.kind === 'schematicarc') {
-    return `<schematicarc center={{ x: ${toTsxNumber(shape.center.x)}, y: ${toTsxNumber(shape.center.y)} }} radius={${toTsxNumber(shape.radius)}} startAngleDegrees={${toTsxNumber(shape.startAngleDegrees)}} endAngleDegrees={${toTsxNumber(shape.endAngleDegrees)}} />`
+    return `<schematicarc cx={${toTsxNumber(shape.cx)}} cy={${toTsxNumber(shape.cy)}} radius={${toTsxNumber(shape.radius)}} startAngle={${toTsxNumber(shape.startAngle)}} endAngle={${toTsxNumber(shape.endAngle)}} />`
   }
 
-  return `<schematictext schX={${toTsxNumber(shape.schX)}} schY={${toTsxNumber(shape.schY)}} text="${escapeStringLiteral(shape.text)}" />`
+  return `<schematictext x={${toTsxNumber(shape.x)}} y={${toTsxNumber(shape.y)}} text="${escapeStringLiteral(shape.text)}" />`
 }
 
 const symbolPortToTsx = (port: SymbolPort, symbolWidth: number, symbolHeight: number): string => {
@@ -151,15 +223,15 @@ const symbolPortToTsx = (port: SymbolPort, symbolWidth: number, symbolHeight: nu
     bottom: 'down'
   }
   const normalizedCoord = (() => {
-    if (port.side === 'left') return { schX: 0, schY: port.schY }
-    if (port.side === 'right') return { schX: symbolWidth, schY: port.schY }
-    if (port.side === 'top') return { schX: port.schX, schY: 0 }
-    return { schX: port.schX, schY: symbolHeight }
+    if (port.side === 'left') return { x: 0, y: port.y }
+    if (port.side === 'right') return { x: symbolWidth, y: port.y }
+    if (port.side === 'top') return { x: port.x, y: 0 }
+    return { x: port.x, y: symbolHeight }
   })()
   const sidePart = ` side="${port.side}"`
   const orderPart = port.order !== undefined ? ` order={${port.order}}` : ''
   const direction = sideToTscDirection[port.side]
-  return `<port name="${escapeStringLiteral(port.name)}" direction="${direction}"${sidePart}${orderPart} schX={${toTsxNumber(normalizedCoord.schX)}} schY={${toTsxNumber(normalizedCoord.schY)}} />`
+  return `<port name="${escapeStringLiteral(port.name)}" direction="${direction}"${sidePart}${orderPart} x={${toTsxNumber(normalizedCoord.x)}} y={${toTsxNumber(normalizedCoord.y)}} />`
 }
 
 const toSafeComponentIdentifier = (raw: string): string => {
@@ -168,13 +240,31 @@ const toSafeComponentIdentifier = (raw: string): string => {
   return safe
 }
 
+const normalizeSymbolDocumentLocal = (document: SymbolDocument): { normalizedShapes: SymbolShape[]; normalizedPorts: SymbolPort[]; width: number; height: number } => {
+  const normalizedShapes = (document.shapes as Array<Record<string, any>>)
+    .map(shape => normalizeSymbolShape(shape))
+    .filter(Boolean) as SymbolShape[]
+
+  const normalizedPorts = (document.ports as Array<Record<string, any>>)
+    .map((port, index) => normalizeSymbolPort(port, index))
+    .filter(Boolean) as SymbolPort[]
+
+  return {
+    normalizedShapes,
+    normalizedPorts,
+    width: Math.max(20, Number(document.width || 120)),
+    height: Math.max(20, Number(document.height || 80))
+  }
+}
+
 export const generateSymbolTsx = (document: SymbolDocument): string => {
   const fnName = toSafeComponentIdentifier(document.name || 'MySymbol')
-  const symbolWidth = Math.max(20, Number(document.width || 120))
-  const symbolHeight = Math.max(20, Number(document.height || 80))
+  const normalized = normalizeSymbolDocumentLocal(document)
+  const symbolWidth = Math.max(20, Number(normalized.width || 120))
+  const symbolHeight = Math.max(20, Number(normalized.height || 80))
   const rows = [
-    ...document.shapes.filter(isRenderableSymbolShape).map(symbolShapeToTsx),
-    ...document.ports.map(port => symbolPortToTsx(port, symbolWidth, symbolHeight))
+    ...normalized.normalizedShapes.filter(isRenderableSymbolShape).map(symbolShapeToTsx),
+    ...normalized.normalizedPorts.map(port => symbolPortToTsx(port, symbolWidth, symbolHeight))
   ]
 
   const body = rows.length > 0
@@ -225,20 +315,29 @@ const parseStringProp = (tag: string, propName: string): { value: string | null;
   return { value: null, dynamic: false }
 }
 
-const parseCenter = (tag: string): { center: { x: number; y: number } | null; dynamic: boolean } => {
-  const match = tag.match(/center\s*=\s*\{\{\s*x\s*:\s*(-?\d+(?:\.\d+)?)\s*,\s*y\s*:\s*(-?\d+(?:\.\d+)?)\s*\}\}/)
-  if (match) {
-    return {
-      center: { x: Number(match[1]), y: Number(match[2]) },
-      dynamic: false
-    }
+const parseCoordinatePair = (tag: string, firstProp: string, secondProp: string): { x: number | null; y: number | null; dynamic: boolean } => {
+  const first = parseNumericProp(tag, firstProp)
+  const second = parseNumericProp(tag, secondProp)
+  const dynamic = first.dynamic || second.dynamic
+  if (first.value === null || second.value === null) {
+    return { x: first.value, y: second.value, dynamic }
+  }
+  return { x: first.value, y: second.value, dynamic }
+}
+
+const parseCenterLike = (tag: string): { cx: number | null; cy: number | null; dynamic: boolean } => {
+  const direct = parseCoordinatePair(tag, 'cx', 'cy')
+  if (direct.x !== null && direct.y !== null) {
+    return { cx: direct.x, cy: direct.y, dynamic: direct.dynamic }
   }
 
-  if (/center\s*=/.test(tag)) {
-    return { center: null, dynamic: true }
+  const legacyCenter = tag.match(/center\s*=\s*\{\{\s*x\s*:\s*(-?\d+(?:\.\d+)?)\s*,\s*y\s*:\s*(-?\d+(?:\.\d+)?)\s*\}\}/)
+  if (legacyCenter) {
+    return { cx: Number(legacyCenter[1]), cy: Number(legacyCenter[2]), dynamic: false }
   }
 
-  return { center: null, dynamic: false }
+  const legacyXY = parseCoordinatePair(tag, 'x', 'y')
+  return { cx: legacyXY.x, cy: legacyXY.y, dynamic: legacyXY.dynamic || /center\s*=/.test(tag) }
 }
 
 const nextImportedId = (() => {
@@ -269,32 +368,30 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
 
   const rectTags = [...body.matchAll(/<schematicrect\b[^>]*\/?>(?:<\/schematicrect>)?/g)].map(match => match[0])
   rectTags.forEach(tag => {
-    const schX = parseNumericProp(tag, 'schX')
-    const schY = parseNumericProp(tag, 'schY')
+    const x = parseNumericProp(tag, 'x')
+    const y = parseNumericProp(tag, 'y')
     const width = parseNumericProp(tag, 'width')
     const height = parseNumericProp(tag, 'height')
-    if ([schX.value, schY.value, width.value, height.value].every(v => v !== null)) {
+    if ([x.value, y.value, width.value, height.value].every(v => v !== null)) {
       document.shapes.push({
         id: nextImportedId('rect'),
         kind: 'schematicrect',
-        center: {
-          x: schX.value as number,
-          y: schY.value as number
-        },
+        x: x.value as number,
+        y: y.value as number,
         width: width.value as number,
         height: height.value as number
       })
     } else {
-      needsManualReview = needsManualReview || schX.dynamic || schY.dynamic || width.dynamic || height.dynamic
+      needsManualReview = needsManualReview || x.dynamic || y.dynamic || width.dynamic || height.dynamic || /center\s*=/.test(tag)
     }
   })
 
   const circleTags = [...body.matchAll(/<schematiccircle\b[^>]*\/?>(?:<\/schematiccircle>)?/g)].map(match => match[0])
   circleTags.forEach(tag => {
-    const center = parseCenter(tag)
+    const center = parseCenterLike(tag)
     const radius = parseNumericProp(tag, 'radius')
-    if (center.center && radius.value !== null) {
-      document.shapes.push({ id: nextImportedId('circle'), kind: 'schematiccircle', center: center.center, radius: radius.value })
+    if (center.cx !== null && center.cy !== null && radius.value !== null) {
+      document.shapes.push({ id: nextImportedId('circle'), kind: 'schematiccircle', cx: center.cx, cy: center.cy, radius: radius.value })
     } else {
       needsManualReview = needsManualReview || center.dynamic || radius.dynamic
     }
@@ -302,18 +399,19 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
 
   const arcTags = [...body.matchAll(/<schematicarc\b[^>]*\/?>(?:<\/schematicarc>)?/g)].map(match => match[0])
   arcTags.forEach(tag => {
-    const center = parseCenter(tag)
+    const center = parseCenterLike(tag)
     const radius = parseNumericProp(tag, 'radius')
-    const startAngle = parseNumericProp(tag, 'startAngleDegrees')
-    const endAngle = parseNumericProp(tag, 'endAngleDegrees')
-    if (center.center && radius.value !== null && startAngle.value !== null && endAngle.value !== null) {
+    const startAngle = parseNumericProp(tag, 'startAngle')
+    const endAngle = parseNumericProp(tag, 'endAngle')
+    if (center.cx !== null && center.cy !== null && radius.value !== null && startAngle.value !== null && endAngle.value !== null) {
       document.shapes.push({
         id: nextImportedId('arc'),
         kind: 'schematicarc',
-        center: center.center,
+        cx: center.cx,
+        cy: center.cy,
         radius: radius.value,
-        startAngleDegrees: startAngle.value,
-        endAngleDegrees: endAngle.value
+        startAngle: startAngle.value,
+        endAngle: endAngle.value
       })
     } else {
       needsManualReview = needsManualReview || center.dynamic || radius.dynamic || startAngle.dynamic || endAngle.dynamic
@@ -322,19 +420,19 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
 
   const textTags = [...body.matchAll(/<schematictext\b[^>]*\/?>(?:<\/schematictext>)?/g)].map(match => match[0])
   textTags.forEach(tag => {
-    const schX = parseNumericProp(tag, 'schX')
-    const schY = parseNumericProp(tag, 'schY')
+    const x = parseNumericProp(tag, 'x')
+    const y = parseNumericProp(tag, 'y')
     const text = parseStringProp(tag, 'text')
-    if (schX.value !== null && schY.value !== null && text.value !== null) {
+    if (x.value !== null && y.value !== null && text.value !== null) {
       document.shapes.push({
         id: nextImportedId('text'),
         kind: 'schematictext',
-        schX: schX.value,
-        schY: schY.value,
+        x: x.value,
+        y: y.value,
         text: text.value
       })
     } else {
-      needsManualReview = needsManualReview || schX.dynamic || schY.dynamic || text.dynamic
+      needsManualReview = needsManualReview || x.dynamic || y.dynamic || text.dynamic
     }
   })
 
@@ -344,11 +442,11 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
     const direction = parseStringProp(tag, 'direction')
     const side = parseStringProp(tag, 'side')
     const order = parseNumericProp(tag, 'order')
-    const schX = parseNumericProp(tag, 'schX')
-    const schY = parseNumericProp(tag, 'schY')
+    const x = parseNumericProp(tag, 'x')
+    const y = parseNumericProp(tag, 'y')
     if (name.value !== null) {
       const rawDirection = String(direction.value || 'passive').toLowerCase()
-        const validElectricalDirections: ElectricalDirection[] = ['input', 'output', 'inout', 'passive']
+      const validElectricalDirections: ElectricalDirection[] = ['input', 'output', 'inout', 'passive']
       const directionAsSide: Record<string, SymbolPortSide> = {
         left: 'left',
         right: 'right',
@@ -357,34 +455,34 @@ export const importSymbolTsxToDocument = (tsx: string, symbolNameHint: string): 
         up: 'top',
         down: 'bottom'
       }
-        const parsedElectricalDirection = validElectricalDirections.includes(rawDirection as ElectricalDirection)
-          ? (rawDirection as ElectricalDirection)
-          : undefined
+      const parsedElectricalDirection = validElectricalDirections.includes(rawDirection as ElectricalDirection)
+        ? (rawDirection as ElectricalDirection)
+        : undefined
       const sideValue = String(side.value || '').toLowerCase()
-        const parsedSide = ((): SymbolPortSide => {
+      const parsedSide = ((): SymbolPortSide => {
         if (sideValue in directionAsSide) return directionAsSide[sideValue]
         if (rawDirection in directionAsSide) return directionAsSide[rawDirection]
-          const x = schX.value !== null ? schX.value : 0
-          const y = schY.value !== null ? schY.value : 0
-          const absX = Math.abs(x)
-          const absY = Math.abs(y)
-          if (absX >= absY) return x >= 0 ? 'right' : 'left'
-          return y >= 0 ? 'bottom' : 'top'
+        const px = x.value !== null ? x.value : 0
+        const py = y.value !== null ? y.value : 0
+        const absX = Math.abs(px)
+        const absY = Math.abs(py)
+        if (absX >= absY) return px >= 0 ? 'right' : 'left'
+        return py >= 0 ? 'bottom' : 'top'
       })()
       document.ports.push({
         id: nextImportedId('port'),
         name: name.value,
-          electricalDirection: parsedElectricalDirection,
+        electricalDirection: parsedElectricalDirection,
         side: parsedSide,
         order: order.value !== null ? order.value : undefined,
-        schX: schX.value !== null ? schX.value : 0,
-        schY: schY.value !== null ? schY.value : 0
+        x: x.value !== null ? x.value : 0,
+        y: y.value !== null ? y.value : 0
       })
-      if (schX.value === null || schY.value === null) {
+      if (x.value === null || y.value === null) {
         needsManualReview = true
       }
     } else {
-      needsManualReview = needsManualReview || name.dynamic || direction.dynamic || schX.dynamic || schY.dynamic
+      needsManualReview = needsManualReview || name.dynamic || direction.dynamic || x.dynamic || y.dynamic
     }
   })
 

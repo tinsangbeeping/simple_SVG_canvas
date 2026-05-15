@@ -26,16 +26,37 @@ const nextShapeId = (() => {
 })()
 
 const toArcPath = (shape: Extract<SymbolShape, { kind: 'schematicarc' }>): string => {
-  const startRadians = (shape.startAngleDegrees * Math.PI) / 180
-  const endRadians = (shape.endAngleDegrees * Math.PI) / 180
-  const sx = shape.center.x + shape.radius * Math.cos(startRadians)
-  const sy = shape.center.y + shape.radius * Math.sin(startRadians)
-  const ex = shape.center.x + shape.radius * Math.cos(endRadians)
-  const ey = shape.center.y + shape.radius * Math.sin(endRadians)
-  const delta = ((shape.endAngleDegrees - shape.startAngleDegrees) % 360 + 360) % 360
+  const startRadians = (shape.startAngle * Math.PI) / 180
+  const endRadians = (shape.endAngle * Math.PI) / 180
+  const sx = shape.cx + shape.radius * Math.cos(startRadians)
+  const sy = shape.cy + shape.radius * Math.sin(startRadians)
+  const ex = shape.cx + shape.radius * Math.cos(endRadians)
+  const ey = shape.cy + shape.radius * Math.sin(endRadians)
+  const delta = ((shape.endAngle - shape.startAngle) % 360 + 360) % 360
   const largeArc = delta > 180 ? 1 : 0
   return `M ${sx} ${sy} A ${shape.radius} ${shape.radius} 0 ${largeArc} 1 ${ex} ${ey}`
 }
+
+const getRectBounds = (shape: Extract<SymbolShape, { kind: 'schematicrect' }>) => ({
+  minX: shape.x,
+  maxX: shape.x + shape.width,
+  minY: shape.y,
+  maxY: shape.y + shape.height
+})
+
+const getCircleBounds = (shape: Extract<SymbolShape, { kind: 'schematiccircle' }>) => ({
+  minX: shape.cx - shape.radius,
+  maxX: shape.cx + shape.radius,
+  minY: shape.cy - shape.radius,
+  maxY: shape.cy + shape.radius
+})
+
+const getArcBounds = (shape: Extract<SymbolShape, { kind: 'schematicarc' }>) => ({
+  minX: shape.cx - shape.radius,
+  maxX: shape.cx + shape.radius,
+  minY: shape.cy - shape.radius,
+  maxY: shape.cy + shape.radius
+})
 
 export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
   document,
@@ -163,8 +184,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         shapes: [...document.shapes, {
           id: nextShapeId('text'),
           kind: 'schematictext',
-          schX: point.x,
-          schY: point.y,
+          x: point.x,
+          y: point.y,
           text
         }]
       }
@@ -210,8 +231,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
           electricalDirection: normalizedDirection,
           side: inferredSide,
           order: existingSideOrder,
-          schX: snapped.x,
-          schY: snapped.y
+          x: snapped.x,
+          y: snapped.y
         }]
       }
       onDocumentChange(nextDoc)
@@ -266,47 +287,30 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         }
 
         if (shape.kind === 'schematicrect') {
-          const halfW = shape.width / 2
-          const halfH = shape.height / 2
-          return {
-            minX: shape.center.x - halfW,
-            maxX: shape.center.x + halfW,
-            minY: shape.center.y - halfH,
-            maxY: shape.center.y + halfH
-          }
+          return getRectBounds(shape)
         }
 
         if (shape.kind === 'schematiccircle') {
-          return {
-            minX: shape.center.x - shape.radius,
-            maxX: shape.center.x + shape.radius,
-            minY: shape.center.y - shape.radius,
-            maxY: shape.center.y + shape.radius
-          }
+          return getCircleBounds(shape)
         }
 
         if (shape.kind === 'schematicarc') {
-          return {
-            minX: shape.center.x - shape.radius,
-            maxX: shape.center.x + shape.radius,
-            minY: shape.center.y - shape.radius,
-            maxY: shape.center.y + shape.radius
-          }
+          return getArcBounds(shape)
         }
 
         return {
-          minX: shape.schX,
-          maxX: shape.schX + Math.max(6, shape.text.length * 6),
-          minY: shape.schY - 8,
-          maxY: shape.schY + 2
+          minX: shape.x,
+          maxX: shape.x + Math.max(6, shape.text.length * 6),
+          minY: shape.y - 8,
+          maxY: shape.y + 2
         }
       }
 
       const selectedPort = [...document.ports].reverse().find(port => intersects({
-        minX: port.schX - 4,
-        maxX: port.schX + 4,
-        minY: port.schY - 4,
-        maxY: port.schY + 4
+        minX: port.x - 4,
+        maxX: port.x + 4,
+        minY: port.y - 4,
+        maxY: port.y + 4
       }))
 
       const selectedShapeIds = document.shapes
@@ -314,10 +318,10 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
         .map(shape => shape.id)
       const selectedPortIds = document.ports
         .filter(port => intersects({
-          minX: port.schX - 4,
-          maxX: port.schX + 4,
-          minY: port.schY - 4,
-          maxY: port.schY + 4
+          minX: port.x - 4,
+          maxX: port.x + 4,
+          minY: port.y - 4,
+          maxY: port.y + 4
         }))
         .map(port => port.id)
 
@@ -365,10 +369,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       nextShape = {
         id: nextShapeId('rect'),
         kind: 'schematicrect',
-        center: {
-          x: (minX + maxX) / 2,
-          y: (minY + maxY) / 2
-        },
+        x: minX,
+        y: minY,
         width: Math.abs(draftEnd.x - draftStart.x),
         height: Math.abs(draftEnd.y - draftStart.y)
       }
@@ -376,17 +378,19 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       nextShape = {
         id: nextShapeId('circle'),
         kind: 'schematiccircle',
-        center: { x: draftStart.x, y: draftStart.y },
+        cx: draftStart.x,
+        cy: draftStart.y,
         radius: Math.max(1, Math.round(Math.hypot(draftEnd.x - draftStart.x, draftEnd.y - draftStart.y)))
       }
     } else if (toolMode === 'schematicarc') {
       nextShape = {
         id: nextShapeId('arc'),
         kind: 'schematicarc',
-        center: { x: draftStart.x, y: draftStart.y },
+        cx: draftStart.x,
+        cy: draftStart.y,
         radius: Math.max(1, Math.round(Math.hypot(draftEnd.x - draftStart.x, draftEnd.y - draftStart.y))),
-        startAngleDegrees: 0,
-        endAngleDegrees: 180
+        startAngle: 0,
+        endAngle: 180
       }
     }
 
@@ -432,10 +436,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       return {
         id: 'draft',
         kind: 'schematicrect',
-        center: {
-          x: (minX + maxX) / 2,
-          y: (minY + maxY) / 2
-        },
+        x: minX,
+        y: minY,
         width: Math.abs(draftEnd.x - draftStart.x),
         height: Math.abs(draftEnd.y - draftStart.y)
       }
@@ -445,7 +447,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       return {
         id: 'draft',
         kind: 'schematiccircle',
-        center: { x: draftStart.x, y: draftStart.y },
+        cx: draftStart.x,
+        cy: draftStart.y,
         radius: Math.max(1, Math.round(Math.hypot(draftEnd.x - draftStart.x, draftEnd.y - draftStart.y)))
       }
     }
@@ -454,10 +457,11 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       return {
         id: 'draft',
         kind: 'schematicarc',
-        center: { x: draftStart.x, y: draftStart.y },
+        cx: draftStart.x,
+        cy: draftStart.y,
         radius: Math.max(1, Math.round(Math.hypot(draftEnd.x - draftStart.x, draftEnd.y - draftStart.y))),
-        startAngleDegrees: 0,
-        endAngleDegrees: 180
+        startAngle: 0,
+        endAngle: 180
       }
     }
 
@@ -516,8 +520,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
       return (
         <rect
           key={shape.id}
-          x={shape.center.x - shape.width / 2}
-          y={shape.center.y - shape.height / 2}
+          x={shape.x}
+          y={shape.y}
           width={shape.width}
           height={shape.height}
           {...common}
@@ -526,7 +530,7 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
     }
 
     if (shape.kind === 'schematiccircle') {
-      return <circle key={shape.id} cx={shape.center.x} cy={shape.center.y} r={shape.radius} {...common} />
+      return <circle key={shape.id} cx={shape.cx} cy={shape.cy} r={shape.radius} {...common} />
     }
 
     if (shape.kind === 'schematicarc') {
@@ -536,8 +540,8 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
     return (
       <text
         key={shape.id}
-        x={shape.schX}
-        y={shape.schY}
+        x={shape.x}
+        y={shape.y}
         fill={isSelected ? '#2ea8ff' : '#f2f2f2'}
         fontSize={8}
         onMouseDown={(event) => {
@@ -669,9 +673,9 @@ export const SymbolCanvas: React.FC<SymbolCanvasProps> = ({
                   onToolModeChange('select')
                 }}
               >
-                <circle cx={port.schX} cy={port.schY} r={2.6} stroke={color} fill="none" strokeWidth={1.3} />
-                <line x1={port.schX - 7} y1={port.schY} x2={port.schX + 7} y2={port.schY} stroke={color} strokeWidth={1.2} />
-                <text x={port.schX + 4} y={port.schY - 4} fill={color} fontSize={7}>{port.name}</text>
+                <circle cx={port.x} cy={port.y} r={2.6} stroke={color} fill="none" strokeWidth={1.3} />
+                <line x1={port.x - 7} y1={port.y} x2={port.x + 7} y2={port.y} stroke={color} strokeWidth={1.2} />
+                <text x={port.x + 4} y={port.y - 4} fill={color} fontSize={7}>{port.name}</text>
               </g>
             )
           })}

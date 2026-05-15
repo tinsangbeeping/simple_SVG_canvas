@@ -671,10 +671,8 @@ const shapeBounds = (shape: Record<string, any>): { minX: number; minY: number; 
   if (shape.kind === 'schematicrect') {
     const width = Math.abs(toFiniteNumber(shape.width))
     const height = Math.abs(toFiniteNumber(shape.height))
-    const centerX = shape.center ? toFiniteNumber(shape.center.x) : toFiniteNumber(shape.schX)
-    const centerY = shape.center ? toFiniteNumber(shape.center.y) : toFiniteNumber(shape.schY)
-    const x = centerX - width / 2
-    const y = centerY - height / 2
+    const x = toFiniteNumber(shape.x ?? shape.schX ?? (shape.center ? shape.center.x - width / 2 : 0))
+    const y = toFiniteNumber(shape.y ?? shape.schY ?? (shape.center ? shape.center.y - height / 2 : 0))
     return {
       minX: x,
       minY: y,
@@ -684,8 +682,8 @@ const shapeBounds = (shape: Record<string, any>): { minX: number; minY: number; 
   }
 
   if (shape.kind === 'schematiccircle' || shape.kind === 'schematicarc') {
-    const centerX = toFiniteNumber(shape.center?.x)
-    const centerY = toFiniteNumber(shape.center?.y)
+    const centerX = toFiniteNumber(shape.cx ?? shape.center?.x ?? shape.x)
+    const centerY = toFiniteNumber(shape.cy ?? shape.center?.y ?? shape.y)
     const radius = Math.abs(toFiniteNumber(shape.radius))
     return {
       minX: centerX - radius,
@@ -696,8 +694,8 @@ const shapeBounds = (shape: Record<string, any>): { minX: number; minY: number; 
   }
 
   if (shape.kind === 'schematictext') {
-    const x = toFiniteNumber(shape.schX)
-    const y = toFiniteNumber(shape.schY)
+    const x = toFiniteNumber(shape.x ?? shape.schX)
+    const y = toFiniteNumber(shape.y ?? shape.schY)
     const textWidth = Math.max(1, String(shape.text || '').length) * 6
     return {
       minX: x,
@@ -729,8 +727,8 @@ const isNonDegenerateShape = (shape: Record<string, any>): boolean => {
 
   if (shape.kind === 'schematicarc') {
     const radius = Math.abs(toFiniteNumber(shape.radius))
-    const start = toFiniteNumber(shape.startAngleDegrees)
-    const end = toFiniteNumber(shape.endAngleDegrees)
+    const start = toFiniteNumber(shape.startAngle ?? shape.startAngleDegrees)
+    const end = toFiniteNumber(shape.endAngle ?? shape.endAngleDegrees)
     const delta = Math.abs(((end - start) % 360 + 360) % 360)
     return radius > 0 && delta > 0
   }
@@ -767,31 +765,24 @@ const normalizeSymbolGeometry = (
   const maxX = shapeBoundsArr.length > 0 ? Math.max(...shapeBoundsArr.map(b => b.maxX)) : 120
   const maxY = shapeBoundsArr.length > 0 ? Math.max(...shapeBoundsArr.map(b => b.maxY)) : 80
 
-  const normalizeX = (value: unknown) => toFiniteNumber(value) - minX
-  const normalizeY = (value: unknown) => toFiniteNumber(value) - minY
-
   const normalizedShapes = shapes.map((shape) => {
     if (shape.kind === 'schematicline') {
       return {
         ...shape,
-        x1: normalizeX(shape.x1),
-        y1: normalizeY(shape.y1),
-        x2: normalizeX(shape.x2),
-        y2: normalizeY(shape.y2)
+        x1: toFiniteNumber(shape.x1),
+        y1: toFiniteNumber(shape.y1),
+        x2: toFiniteNumber(shape.x2),
+        y2: toFiniteNumber(shape.y2)
       }
     }
 
     if (shape.kind === 'schematicrect') {
       const width = Math.abs(toFiniteNumber(shape.width))
       const height = Math.abs(toFiniteNumber(shape.height))
-      const centerX = shape.center ? toFiniteNumber(shape.center.x) : toFiniteNumber(shape.schX)
-      const centerY = shape.center ? toFiniteNumber(shape.center.y) : toFiniteNumber(shape.schY)
       return {
         ...shape,
-        center: {
-          x: normalizeX(centerX),
-          y: normalizeY(centerY)
-        },
+        x: toFiniteNumber(shape.x ?? shape.schX ?? (shape.center ? shape.center.x - width / 2 : 0)),
+        y: toFiniteNumber(shape.y ?? shape.schY ?? (shape.center ? shape.center.y - height / 2 : 0)),
         width,
         height
       }
@@ -800,10 +791,8 @@ const normalizeSymbolGeometry = (
     if (shape.kind === 'schematiccircle' || shape.kind === 'schematicarc') {
       return {
         ...shape,
-        center: {
-          x: normalizeX(shape.center?.x),
-          y: normalizeY(shape.center?.y)
-        },
+        cx: toFiniteNumber(shape.cx ?? shape.center?.x ?? shape.x),
+        cy: toFiniteNumber(shape.cy ?? shape.center?.y ?? shape.y),
         radius: Math.abs(toFiniteNumber(shape.radius))
       }
     }
@@ -811,8 +800,8 @@ const normalizeSymbolGeometry = (
     if (shape.kind === 'schematictext') {
       return {
         ...shape,
-        schX: normalizeX(shape.schX),
-        schY: normalizeY(shape.schY),
+        x: toFiniteNumber(shape.x ?? shape.schX),
+        y: toFiniteNumber(shape.y ?? shape.schY),
         text: String(shape.text || '')
       }
     }
@@ -824,8 +813,8 @@ const normalizeSymbolGeometry = (
     .filter(port => String(port.name || '').trim().length > 0)
     .map((port, index) => ({
       name: String(port.name || '').trim(),
-      x: normalizeX(port.x),
-      y: normalizeY(port.y),
+      x: toFiniteNumber(port.x),
+      y: toFiniteNumber(port.y),
       ...(port.side ? { side: port.side } : {}),
       order: port.order !== undefined ? port.order : index
     }))
@@ -852,8 +841,8 @@ export const extractAllSymbols = (fsMap: FSMap): SymbolDefinition[] => {
     const rawPorts = parsedDoc.ports.length > 0
       ? parsedDoc.ports.map(port => ({
           name: port.name,
-          x: toFiniteNumber(port.schX),
-          y: toFiniteNumber(port.schY),
+          x: toFiniteNumber(port.x),
+          y: toFiniteNumber(port.y),
           electricalDirection: port.electricalDirection,
           side: port.side,
           order: port.order

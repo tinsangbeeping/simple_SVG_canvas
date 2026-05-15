@@ -95,14 +95,14 @@ export const SchematicCircleItem: CatalogItem = {
     category: 'Primitives',
     description: 'Draw a circle in symbol',
     editablePropsSchema: {
-      x: {
+      cx: {
         type: 'number',
-        label: 'X',
+        label: 'Center X',
         default: 0
       },
-      y: {
+      cy: {
         type: 'number',
-        label: 'Y',
+        label: 'Center Y',
         default: 0
       },
       radius: {
@@ -112,14 +112,14 @@ export const SchematicCircleItem: CatalogItem = {
       }
     },
     defaultProps: {
-      x: 0,
-      y: 0,
+      cx: 0,
+      cy: 0,
       radius: 10
     }
   },
   emitTSX: (props) => {
-    const { x, y, radius } = props
-    return `<schematiccircle x={${x}} y={${y}} radius={${radius}} />`
+    const { cx, cy, radius } = props
+    return `<schematiccircle cx={${cx}} cy={${cy}} radius={${radius}} />`
   }
 }
 
@@ -132,14 +132,14 @@ export const SchematicArcItem: CatalogItem = {
     category: 'Primitives',
     description: 'Draw an arc in symbol',
     editablePropsSchema: {
-      x: {
+      cx: {
         type: 'number',
-        label: 'X',
+        label: 'Center X',
         default: 0
       },
-      y: {
+      cy: {
         type: 'number',
-        label: 'Y',
+        label: 'Center Y',
         default: 0
       },
       radius: {
@@ -159,16 +159,16 @@ export const SchematicArcItem: CatalogItem = {
       }
     },
     defaultProps: {
-      x: 0,
-      y: 0,
+      cx: 0,
+      cy: 0,
       radius: 10,
       startAngle: 0,
       endAngle: 90
     }
   },
   emitTSX: (props) => {
-    const { x, y, radius, startAngle, endAngle } = props
-    return `<schematicarc x={${x}} y={${y}} radius={${radius}} startAngle={${startAngle}} endAngle={${endAngle}} />`
+    const { cx, cy, radius, startAngle, endAngle } = props
+    return `<schematicarc cx={${cx}} cy={${cy}} radius={${radius}} startAngle={${startAngle}} endAngle={${endAngle}} />`
   }
 }
 

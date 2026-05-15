@@ -47,18 +47,23 @@ const run = () => {
   symbolDoc.height = 120
   symbolDoc.shapes = [
     { id: 'line-1', kind: 'schematicline', x1: 10, y1: 20, x2: 120, y2: 34 },
-    { id: 'rect-1', kind: 'schematicrect', center: { x: 70, y: 75 }, width: 46, height: 18 },
-    { id: 'circle-1', kind: 'schematiccircle', center: { x: 120, y: 36 }, radius: 20 },
-    { id: 'text-1', kind: 'schematictext', schX: 14, schY: 108, text: 'ASYM' }
+    { id: 'rect-1', kind: 'schematicrect', x: 47, y: 66, width: 46, height: 18 },
+    { id: 'circle-1', kind: 'schematiccircle', cx: 120, cy: 36, radius: 20 },
+    { id: 'arc-1', kind: 'schematicarc', cx: 84, cy: 56, radius: 12, startAngle: 0, endAngle: 180 },
+    { id: 'text-1', kind: 'schematictext', x: 14, y: 108, text: 'ASYM' }
   ]
   symbolDoc.ports = [
-    { id: 'p-left', name: 'VIN', side: 'left', schX: 0, schY: 36, electricalDirection: 'input' },
-    { id: 'p-right', name: 'VOUT', side: 'right', schX: 160, schY: 64, electricalDirection: 'output' },
-    { id: 'p-top', name: 'EN', side: 'top', schX: 90, schY: 0, electricalDirection: 'input' }
+    { id: 'p-left', name: 'VIN', side: 'left', x: 0, y: 36, electricalDirection: 'input' },
+    { id: 'p-right', name: 'VOUT', side: 'right', x: 160, y: 64, electricalDirection: 'output' },
+    { id: 'p-top', name: 'EN', side: 'top', x: 90, y: 0, electricalDirection: 'input' }
   ]
 
   const generatedTsx = generateSymbolTsx(symbolDoc)
   const directImport = importSymbolTsxToDocument(generatedTsx, 'test1')
+  assert(generatedTsx.includes('<schematicrect x={47} y={66} width={46} height={18} />'), 'exported TSX must use rect x/y top-left semantics')
+  assert(generatedTsx.includes('<schematiccircle cx={120} cy={36} radius={20} />'), 'exported TSX must use circle cx/cy center semantics')
+  assert(generatedTsx.includes('<schematicarc cx={84} cy={56} radius={12} startAngle={0} endAngle={180} />'), 'exported TSX must use arc cx/cy and canonical angles')
+  assert(generatedTsx.includes('<port name="VIN"'), 'exported TSX should include ports')
 
   // A: Symbol Maker -> placed instance (geometry+ports survive symbol extraction path)
   const fsMapA: FSMap = {
@@ -81,10 +86,24 @@ const run = () => {
   const originalRect = symbolDoc.shapes.find(shape => shape.kind === 'schematicrect') as any
   const roundtripRect = reimported.shapes.find(shape => shape.kind === 'schematicrect') as any
   assert(!!roundtripRect, 'C: roundtrip rect is missing')
-  assert(roundtripRect.center.x === originalRect.center.x, 'C: rect center.x changed during roundtrip')
-  assert(roundtripRect.center.y === originalRect.center.y, 'C: rect center.y changed during roundtrip')
+  assert(roundtripRect.x === originalRect.x, 'C: rect x changed during roundtrip')
+  assert(roundtripRect.y === originalRect.y, 'C: rect y changed during roundtrip')
   assert(roundtripRect.width === originalRect.width, 'C: rect width changed during roundtrip')
   assert(roundtripRect.height === originalRect.height, 'C: rect height changed during roundtrip')
+
+  const originalCircle = symbolDoc.shapes.find(shape => shape.kind === 'schematiccircle') as any
+  const roundtripCircle = reimported.shapes.find(shape => shape.kind === 'schematiccircle') as any
+  assert(!!roundtripCircle, 'C: roundtrip circle is missing')
+  assert(roundtripCircle.cx === originalCircle.cx, 'C: circle cx changed during roundtrip')
+  assert(roundtripCircle.cy === originalCircle.cy, 'C: circle cy changed during roundtrip')
+
+  const originalArc = symbolDoc.shapes.find(shape => shape.kind === 'schematicarc') as any
+  const roundtripArc = reimported.shapes.find(shape => shape.kind === 'schematicarc') as any
+  assert(!!roundtripArc, 'C: roundtrip arc is missing')
+  assert(roundtripArc.cx === originalArc.cx, 'C: arc cx changed during roundtrip')
+  assert(roundtripArc.cy === originalArc.cy, 'C: arc cy changed during roundtrip')
+  assert(roundtripArc.startAngle === originalArc.startAngle, 'C: arc startAngle changed during roundtrip')
+  assert(roundtripArc.endAngle === originalArc.endAngle, 'C: arc endAngle changed during roundtrip')
 
   // D: EFR32PowerChip symbolRef/port-side behavior via registry.
   const efrDoc = createSymbolDocument('EFR32PowerChip')
@@ -121,7 +140,7 @@ const run = () => {
 
   console.log('PASS A: Symbol Maker geometry is preserved for placed symbol extraction path')
   console.log('PASS B: Missing symbol geometry is detectable via unresolved symbolRef')
-  console.log('PASS C: Rect primitive center/size survives export-import roundtrip')
+  console.log('PASS C: Rect primitive local geometry survives export-import roundtrip')
   console.log('PASS D: EFR32PowerChip symbolRef resolves with proper geometry and sided ports')
   console.log('All symbol roundtrip checks passed.')
 }

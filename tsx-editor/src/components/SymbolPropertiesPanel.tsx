@@ -134,8 +134,8 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
 
             {selectedShape.kind === 'schematicrect' && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <input type="number" value={selectedShape.center.x} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, center: { ...selectedShape.center, x: toNumber(e.target.value, selectedShape.center.x) } })))} />
-                <input type="number" value={selectedShape.center.y} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, center: { ...selectedShape.center, y: toNumber(e.target.value, selectedShape.center.y) } })))} />
+                <input type="number" value={selectedShape.x} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, x: toNumber(e.target.value, selectedShape.x) } as SymbolShape)))} />
+                <input type="number" value={selectedShape.y} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, y: toNumber(e.target.value, selectedShape.y) } as SymbolShape)))} />
                 <input type="number" value={selectedShape.width} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, width: Math.max(1, toNumber(e.target.value, selectedShape.width)) })))} />
                 <input type="number" value={selectedShape.height} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, height: Math.max(1, toNumber(e.target.value, selectedShape.height)) })))} />
               </div>
@@ -143,19 +143,19 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
 
             {selectedShape.kind === 'schematiccircle' && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <input type="number" value={selectedShape.center.x} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, center: { ...selectedShape.center, x: toNumber(e.target.value, selectedShape.center.x) } })))} />
-                <input type="number" value={selectedShape.center.y} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, center: { ...selectedShape.center, y: toNumber(e.target.value, selectedShape.center.y) } })))} />
+                <input type="number" value={selectedShape.cx} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, cx: toNumber(e.target.value, selectedShape.cx) } as SymbolShape)))} />
+                <input type="number" value={selectedShape.cy} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, cy: toNumber(e.target.value, selectedShape.cy) } as SymbolShape)))} />
                 <input type="number" value={selectedShape.radius} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, radius: Math.max(1, toNumber(e.target.value, selectedShape.radius)) })))} />
               </div>
             )}
 
             {selectedShape.kind === 'schematicarc' && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <input type="number" value={selectedShape.center.x} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, center: { ...selectedShape.center, x: toNumber(e.target.value, selectedShape.center.x) } })))} />
-                <input type="number" value={selectedShape.center.y} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, center: { ...selectedShape.center, y: toNumber(e.target.value, selectedShape.center.y) } })))} />
+                <input type="number" value={selectedShape.cx} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, cx: toNumber(e.target.value, selectedShape.cx) } as SymbolShape)))} />
+                <input type="number" value={selectedShape.cy} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, cy: toNumber(e.target.value, selectedShape.cy) } as SymbolShape)))} />
                 <input type="number" value={selectedShape.radius} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, radius: Math.max(1, toNumber(e.target.value, selectedShape.radius)) })))} />
-                <input type="number" value={selectedShape.startAngleDegrees} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, startAngleDegrees: toNumber(e.target.value, selectedShape.startAngleDegrees) })))} />
-                <input type="number" value={selectedShape.endAngleDegrees} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, endAngleDegrees: toNumber(e.target.value, selectedShape.endAngleDegrees) })))} />
+                <input type="number" value={selectedShape.startAngle} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, startAngle: toNumber(e.target.value, selectedShape.startAngle) } as SymbolShape)))} />
+                <input type="number" value={selectedShape.endAngle} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, endAngle: toNumber(e.target.value, selectedShape.endAngle) } as SymbolShape)))} />
               </div>
             )}
 
@@ -163,8 +163,8 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
               <div style={{ display: 'grid', gap: 8 }}>
                 <input value={selectedShape.text} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, text: e.target.value })))} />
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                  <input type="number" value={selectedShape.schX} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, schX: toNumber(e.target.value, selectedShape.schX) })))} />
-                  <input type="number" value={selectedShape.schY} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, schY: toNumber(e.target.value, selectedShape.schY) })))} />
+                  <input type="number" value={selectedShape.x} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, x: toNumber(e.target.value, selectedShape.x) } as SymbolShape)))} />
+                  <input type="number" value={selectedShape.y} onChange={e => onDocumentChange(updateShape(document, selectedShape.id, shape => ({ ...shape as any, y: toNumber(e.target.value, selectedShape.y) } as SymbolShape)))} />
                 </div>
               </div>
             )}
@@ -192,8 +192,8 @@ export const SymbolPropertiesPanel: React.FC<SymbolPropertiesPanelProps> = ({
               {electricalDirections.map(direction => <option key={direction} value={direction}>{direction}</option>)}
             </select>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <input type="number" value={selectedPort.schX} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, schX: toNumber(e.target.value, selectedPort.schX) } : port) })} />
-              <input type="number" value={selectedPort.schY} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, schY: toNumber(e.target.value, selectedPort.schY) } : port) })} />
+              <input type="number" value={selectedPort.x} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, x: toNumber(e.target.value, selectedPort.x) } : port) })} />
+              <input type="number" value={selectedPort.y} onChange={e => onDocumentChange({ ...document, ports: document.ports.map(port => port.id === selectedPort.id ? { ...port, y: toNumber(e.target.value, selectedPort.y) } : port) })} />
             </div>
             <button
               className="btn btn-secondary"
