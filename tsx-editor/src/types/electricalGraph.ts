@@ -1,3 +1,11 @@
+/**
+ * Legacy compatibility graph.
+ *
+ * The frozen canonical data model now lives in src/types/schematicModel.ts and
+ * separates connectivity, geometry, and reusable interface concerns.
+ *
+ * Keep this file only for older helpers that still expect the pre-freeze shape.
+ */
 export type Point = {
   x: number
   y: number

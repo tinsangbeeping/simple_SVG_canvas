@@ -5,6 +5,10 @@
  * of a circuit. This layer answers "what is connected to what" and knows nothing
  * about how the schematic is drawn.
  *
+ * Frozen schema note:
+ *   The repo-wide canonical schema now lives in src/types/schematicModel.ts.
+ *   This file remains the truth-focused projection of that split model.
+ *
  * Key invariant:
  *   SAME NET NAME  ≠  SAME VISIBLE WIRE
  *

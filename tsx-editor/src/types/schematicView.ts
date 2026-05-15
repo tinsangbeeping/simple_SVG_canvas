@@ -4,6 +4,10 @@
  * The SCHEMATIC VIEW GRAPH — how the circuit is drawn on screen.
  * This layer answers "where is it drawn and how does it look."
  *
+ * Frozen schema note:
+ *   The repo-wide canonical schema now lives in src/types/schematicModel.ts.
+ *   This file remains the geometry/view-focused projection of that split model.
+ *
  * Key invariants:
  *   1. SAME NET ≠ SAME VISIBLE WIRE
  *      A visible wire must be declared explicitly here to be drawn.
